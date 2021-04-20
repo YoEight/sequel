@@ -153,10 +153,13 @@ pub fn evaluate(env: &mut types::Env, expr: Expr) -> crate::Result<types::Value>
                         (Value::String(left), Value::String(right), BinaryOperator::LtEq) => {
                             Ok(Value::Bool(left <= right))
                         }
+
+                        _ => { Error::failure("toto") }
                     }?;
                 }
 
                 Op::Value(value) => params.push(value),
+                _ => {}
             }
         } else {
             result = params.pop();
@@ -169,4 +172,61 @@ pub fn evaluate(env: &mut types::Env, expr: Expr) -> crate::Result<types::Value>
     } else {
         Error::failure("Unexpected runtime error, no final result")
     }
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum Like {
+    Pourcentage,
+    Underscore,
+    String(String),
+}
+
+fn parse_like_expr(expr: &str) -> Vec<Like> {
+    let mut tokens = Vec::new();
+    let mut buffer = String::new();
+
+    for c in expr.chars() {
+        if c == '%' || c == '_' {
+            if !buffer.is_empty() {
+                tokens.push(Like::String(buffer));
+                buffer = String::new();
+            }
+
+            if c == '%' {
+                tokens.push(Like::Pourcentage);
+            } else if c == '_' {
+                tokens.push(Like::Underscore);
+            }
+        } else {
+            buffer.push(c);
+        }
+    }
+
+    if !buffer.is_empty() {
+        tokens.push(Like::String(buffer));
+    }
+
+    tokens
+}
+
+#[cfg(test)]
+mod like_tests {
+
+    #[test]
+    fn like_parsing_1() {
+        use super::Like::*;
+        use super::parse_like_expr;
+
+        assert_eq!(parse_like_expr("a%"), vec![String("a".to_string()), Pourcentage]);
+        assert_eq!(parse_like_expr("%a"), vec![Pourcentage, String("a".to_string())]);
+        assert_eq!(parse_like_expr("%or%"), vec![Pourcentage, String("or".to_string()), Pourcentage]);
+        assert_eq!(parse_like_expr("_r%"), vec![Underscore, String("r".to_string()), Pourcentage]);
+        assert_eq!(parse_like_expr("a_%"), vec![String("a".to_string()), Underscore, Pourcentage]);
+        assert_eq!(parse_like_expr("a__%"), vec![String("a".to_string()), Underscore, Underscore, Pourcentage]);
+        assert_eq!(parse_like_expr("a%o"), vec![String("a".to_string()), Pourcentage, String("o".to_string())]);
+    }
+}
+
+fn is_string_like(target: &String, expr: String) -> bool {
+    false
 }
