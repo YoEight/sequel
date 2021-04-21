@@ -184,21 +184,32 @@ enum Like {
 fn parse_like_expr(expr: &str) -> Vec<Like> {
     let mut tokens = Vec::new();
     let mut buffer = String::new();
+    let mut prev_was_pourcentage = false;
+    let mut escaped = false;
 
     for c in expr.chars() {
-        if c == '%' || c == '_' {
+        if c == '\\' {
+            escaped = true;
+            continue;
+        }
+
+        if !escaped && (c == '%' || c == '_') {
             if !buffer.is_empty() {
                 tokens.push(Like::String(buffer));
                 buffer = String::new();
             }
 
-            if c == '%' {
+            if c == '%' && !prev_was_pourcentage {
                 tokens.push(Like::Pourcentage);
+                prev_was_pourcentage = true;
             } else if c == '_' {
                 tokens.push(Like::Underscore);
+                prev_was_pourcentage = false;
             }
         } else {
             buffer.push(c);
+            prev_was_pourcentage = false;
+            escaped = false;
         }
     }
 
@@ -207,6 +218,37 @@ fn parse_like_expr(expr: &str) -> Vec<Like> {
     }
 
     tokens
+}
+fn is_string_like(target: &str, expr: &str) -> bool {
+    use Like::*;
+    let instrs = parse_like_expr(expr);
+
+    match instrs.as_slice() {
+        [String(expr), Pourcentage] => target.starts_with(expr.as_str()),
+        [Pourcentage, String(expr)] => target.ends_with(expr.as_str()),
+        [Pourcentage, String(expr), Pourcentage] => target.contains(expr.as_str()),
+        [String(start), Pourcentage, String(end)] => target.starts_with(start.as_str()) && target.ends_with(end.as_str()),
+        instrs => {
+            let len = instrs.len();
+            if len == 1 {
+                return match &instrs[0] {
+                    Underscore => target.len() == 1,
+                    Pourcentage => true,
+                    String(expr) => target == expr,
+                };
+            }
+
+            let mut offset = 0usize;
+            let end_with = &instrs[0] == &Pourcentage;
+            let start_with = &instrs[len - 1] == &Pourcentage;
+
+            loop {
+                break;
+            }
+
+            false
+        }
+    }
 }
 
 #[cfg(test)]
@@ -224,9 +266,8 @@ mod like_tests {
         assert_eq!(parse_like_expr("a_%"), vec![String("a".to_string()), Underscore, Pourcentage]);
         assert_eq!(parse_like_expr("a__%"), vec![String("a".to_string()), Underscore, Underscore, Pourcentage]);
         assert_eq!(parse_like_expr("a%o"), vec![String("a".to_string()), Pourcentage, String("o".to_string())]);
+        assert_eq!(parse_like_expr("%%"), vec![Pourcentage]);
+        assert_eq!(parse_like_expr("%%%"), vec![Pourcentage]);
+        assert_eq!(parse_like_expr("\\%"), vec![String("%".to_string())]);
     }
-}
-
-fn is_string_like(target: &String, expr: String) -> bool {
-    false
 }
