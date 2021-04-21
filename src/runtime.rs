@@ -154,7 +154,7 @@ pub fn evaluate(env: &mut types::Env, expr: Expr) -> crate::Result<types::Value>
                             Ok(Value::Bool(left <= right))
                         }
 
-                        _ => { Error::failure("toto") }
+                        _ => Error::failure("toto"),
                     }?;
                 }
 
@@ -227,7 +227,9 @@ fn is_string_like(target: &str, expr: &str) -> bool {
         [String(expr), Pourcentage] => target.starts_with(expr.as_str()),
         [Pourcentage, String(expr)] => target.ends_with(expr.as_str()),
         [Pourcentage, String(expr), Pourcentage] => target.contains(expr.as_str()),
-        [String(start), Pourcentage, String(end)] => target.starts_with(start.as_str()) && target.ends_with(end.as_str()),
+        [String(start), Pourcentage, String(end)] => {
+            target.starts_with(start.as_str()) && target.ends_with(end.as_str())
+        }
         instrs => {
             let len = instrs.len();
             if len == 1 {
@@ -238,15 +240,38 @@ fn is_string_like(target: &str, expr: &str) -> bool {
                 };
             }
 
+            let mut pattern = std::string::String::new();
             let mut offset = 0usize;
-            let end_with = &instrs[0] == &Pourcentage;
-            let start_with = &instrs[len - 1] == &Pourcentage;
 
-            loop {
-                break;
+            for instr in instrs {
+                match instr {
+                    Pourcentage => {
+                        if offset == 0 {
+                            pattern.push('$');
+                        } else if offset == len - 1 {
+                            pattern.insert(0, '^');
+                        }
+                    }
+
+                    Underscore => pattern.push('.'),
+                    String(expr) => {
+                        for c in expr.chars() {
+                            if c.is_ascii_punctuation() {
+                                pattern.push('\\');
+                            }
+
+                            pattern.push(c);
+                        }
+                    }
+                }
+
+                offset += 1;
             }
 
-            false
+            // TODO - Cache compiled REGEX because those are expensive.
+            let regex = regex::Regex::new(pattern.as_str()).unwrap();
+
+            regex.is_match(target)
         }
     }
 }
@@ -255,19 +280,54 @@ fn is_string_like(target: &str, expr: &str) -> bool {
 mod like_tests {
 
     #[test]
-    fn like_parsing_1() {
-        use super::Like::*;
+    fn like_expr_parsing() {
         use super::parse_like_expr;
+        use super::Like::*;
 
-        assert_eq!(parse_like_expr("a%"), vec![String("a".to_string()), Pourcentage]);
-        assert_eq!(parse_like_expr("%a"), vec![Pourcentage, String("a".to_string())]);
-        assert_eq!(parse_like_expr("%or%"), vec![Pourcentage, String("or".to_string()), Pourcentage]);
-        assert_eq!(parse_like_expr("_r%"), vec![Underscore, String("r".to_string()), Pourcentage]);
-        assert_eq!(parse_like_expr("a_%"), vec![String("a".to_string()), Underscore, Pourcentage]);
-        assert_eq!(parse_like_expr("a__%"), vec![String("a".to_string()), Underscore, Underscore, Pourcentage]);
-        assert_eq!(parse_like_expr("a%o"), vec![String("a".to_string()), Pourcentage, String("o".to_string())]);
+        assert_eq!(
+            parse_like_expr("a%"),
+            vec![String("a".to_string()), Pourcentage]
+        );
+        assert_eq!(
+            parse_like_expr("%a"),
+            vec![Pourcentage, String("a".to_string())]
+        );
+        assert_eq!(
+            parse_like_expr("%or%"),
+            vec![Pourcentage, String("or".to_string()), Pourcentage]
+        );
+        assert_eq!(
+            parse_like_expr("_r%"),
+            vec![Underscore, String("r".to_string()), Pourcentage]
+        );
+        assert_eq!(
+            parse_like_expr("a_%"),
+            vec![String("a".to_string()), Underscore, Pourcentage]
+        );
+        assert_eq!(
+            parse_like_expr("a__%"),
+            vec![String("a".to_string()), Underscore, Underscore, Pourcentage]
+        );
+        assert_eq!(
+            parse_like_expr("a%o"),
+            vec![
+                String("a".to_string()),
+                Pourcentage,
+                String("o".to_string())
+            ]
+        );
         assert_eq!(parse_like_expr("%%"), vec![Pourcentage]);
         assert_eq!(parse_like_expr("%%%"), vec![Pourcentage]);
         assert_eq!(parse_like_expr("\\%"), vec![String("%".to_string())]);
+    }
+
+    #[test]
+    fn like_predicate_test() {
+        use super::is_string_like;
+
+        assert!(is_string_like("ak", "a%"));
+        assert!(is_string_like("ka", "%a"));
+        assert!(is_string_like("bord", "%or%"));
+        assert!(is_string_like("arddifskj", "_r%"));
     }
 }
