@@ -60,6 +60,12 @@ impl Error {
     }
 }
 
+impl std::fmt::Display for Error {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
+
 pub type Result<A> = std::result::Result<A, Error>;
 
 pub enum Op {
@@ -70,7 +76,12 @@ pub enum Op {
     Between(bool),
     Value(Value),
     Expr(sqlparser::ast::Expr),
-    InSubQuery(bool, BoxStream<'static, Result<Line>>),
+    InSubQuery(
+        Option<sqlparser::ast::Expr>,
+        bool,
+        Line,
+        BoxStream<'static, Result<Line>>,
+    ),
 }
 
 #[derive(Copy, Clone, PartialEq, Eq, Hash)]

@@ -1,4 +1,5 @@
 use crate::types::{self, Error, Op, Value};
+use futures::TryStreamExt;
 use sqlparser::ast::{BinaryOperator, Expr, UnaryOperator};
 
 fn stack_pop<A>(stack: &mut Vec<A>) -> crate::Result<A> {
@@ -8,7 +9,7 @@ fn stack_pop<A>(stack: &mut Vec<A>) -> crate::Result<A> {
     }
 }
 
-pub fn evaluate(env: &mut types::Env, expr: Expr) -> crate::Result<types::Value> {
+pub async fn evaluate(env: &mut types::Env, expr: Expr) -> crate::Result<types::Value> {
     let mut params = Vec::<Value>::new();
     let mut stack = Vec::<Op>::new();
     let mut result = None;
@@ -310,7 +311,7 @@ pub fn evaluate(env: &mut types::Env, expr: Expr) -> crate::Result<types::Value>
                     stack.push(Op::Value(Value::Bool(result)));
                 }
 
-                Op::InSubQuery(negated, stream) => {
+                Op::InSubQuery(predicate_expr, negated, line, mut stream) => {
                     let expr = stack_pop(&mut params)?;
                     let elem = stack_pop(&mut params)?;
 
@@ -324,7 +325,76 @@ pub fn evaluate(env: &mut types::Env, expr: Expr) -> crate::Result<types::Value>
                     let skip = elem.is_null() || !elem.as_bool()?;
 
                     if !skip {
+                        if line.len() == 1 {
+                            for (_, elem) in line {
+                                if !expr.is_same_type(&elem) {
+                                    return Error::failure(format!("Different types used when consuming subquery {:?} and {:?}", expr, elem));
+                                }
 
+                                match (&expr, elem) {
+                                    (Value::Number(ref expr), Value::Number(elem))
+                                        if *expr == elem =>
+                                    {
+                                        stack.push(Op::Value(Value::Bool(!negated)));
+                                    }
+
+                                    (Value::Float(ref expr), Value::Float(elem))
+                                        if *expr == elem =>
+                                    {
+                                        stack.push(Op::Value(Value::Bool(!negated)));
+                                    }
+
+                                    (Value::String(ref expr), Value::String(ref elem))
+                                        if expr == elem =>
+                                    {
+                                        stack.push(Op::Value(Value::Bool(!negated)));
+                                    }
+
+                                    (Value::Bool(ref expr), Value::Bool(elem)) if *expr == elem => {
+                                        stack.push(Op::Value(Value::Bool(!negated)));
+                                    }
+
+                                    (expr, elem) => {
+                                        return Error::failure(format!("Unreachable code path reached in InSubQuery evaluation: {} {}", expr, elem));
+                                    }
+                                }
+                            }
+
+                            continue;
+                        }
+
+                        return Error::failure("in-sub query must only have one column");
+                    }
+
+                    match stream.try_next().await {
+                        Err(e) => {
+                            return Error::failure(format!("Error when consuming subquery: {}", e));
+                        }
+
+                        Ok(line) => {
+                            if let Some(line) = line {
+                                stack.push(Op::InSubQuery(
+                                    predicate_expr.clone(),
+                                    negated,
+                                    line,
+                                    stream,
+                                ));
+
+                                // We push back onto the stack the left-side expression we already computed.
+                                stack.push(Op::Value(expr));
+
+                                if let Some(predicate_expr) = predicate_expr {
+                                    // TODO - Don't forget to handle scope properly.
+                                    stack.push(Op::Expr(predicate_expr));
+                                } else {
+                                    stack.push(Op::Value(Value::Bool(true)));
+                                }
+
+                                continue;
+                            }
+
+                            stack.push(Op::Value(Value::Bool(negated)));
+                        }
                     }
                 }
 
