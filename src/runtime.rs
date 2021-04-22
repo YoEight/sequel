@@ -296,6 +296,20 @@ pub fn evaluate(env: &mut types::Env, expr: Expr) -> crate::Result<types::Value>
                     stack.push(Op::Value(Value::Bool(result)));
                 }
 
+                Op::IsNull(negated) => {
+                    let mut result = if let Value::Null = stack_pop(&mut params)? {
+                        true
+                    } else {
+                        false
+                    };
+
+                    if negated {
+                        result = !result;
+                    }
+
+                    stack.push(Op::Value(Value::Bool(result)));
+                }
+
                 _ => {}
             }
         } else {
