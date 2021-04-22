@@ -153,6 +153,12 @@ pub fn evaluate(env: &mut types::Env, expr: Expr) -> crate::Result<types::Value>
                         (Value::String(left), Value::String(right), BinaryOperator::LtEq) => {
                             Ok(Value::Bool(left <= right))
                         }
+                        (Value::String(left), Value::String(right), BinaryOperator::Like) => {
+                            Ok(Value::Bool(is_string_like(left.as_str(), right.as_str())))
+                        }
+                        (Value::String(left), Value::String(right), BinaryOperator::NotLike) => {
+                            Ok(Value::Bool(!is_string_like(left.as_str(), right.as_str())))
+                        }
 
                         _ => Error::failure("toto"),
                     }?;
@@ -329,5 +335,8 @@ mod like_tests {
         assert!(is_string_like("ka", "%a"));
         assert!(is_string_like("bord", "%or%"));
         assert!(is_string_like("arddifskj", "_r%"));
+        assert!(is_string_like("ax", "a_%"));
+        assert!(is_string_like("axx", "a__%"));
+        assert!(is_string_like("abazfoo", "a%o"));
     }
 }
