@@ -159,10 +159,14 @@ pub fn evaluate(env: &mut types::Env, expr: Expr) -> crate::Result<types::Value>
                         (Value::String(left), Value::String(right), BinaryOperator::NotLike) => {
                             Ok(Value::Bool(!is_string_like(left.as_str(), right.as_str())))
                         }
-                        (Value::String(mut left), Value::String(right), BinaryOperator::StringConcat) => {
+                        (
+                            Value::String(mut left),
+                            Value::String(right),
+                            BinaryOperator::StringConcat,
+                        ) => {
                             left.push_str(right.as_str());
 
-                            Ok(Value::String(left)))
+                            Ok(Value::String(left))
                         }
 
                         (Value::Bool(left), Value::Bool(right), BinaryOperator::And) => {
@@ -223,6 +227,75 @@ pub fn evaluate(env: &mut types::Env, expr: Expr) -> crate::Result<types::Value>
                 }
 
                 Op::Value(value) => params.push(value),
+
+                Op::Between(negated) => {
+                    let expr = stack_pop(&mut params)?;
+                    let low = stack_pop(&mut params)?;
+                    let high = stack_pop(&mut params)?;
+
+                    let mut result = match (expr, low, high) {
+                        (Value::Number(value), Value::Number(low), Value::Number(high)) => {
+                            Ok(value >= low && value <= high)
+                        }
+                        (Value::Float(value), Value::Float(low), Value::Float(high)) => {
+                            Ok(value >= low && value <= high)
+                        }
+                        (Value::String(value), Value::String(low), Value::String(high)) => {
+                            Ok(value >= low && value <= high)
+                        }
+                        (expr, low, high) => {
+                            let negated_str = if negated { "NOT" } else { "" };
+
+                            Error::failure(format!(
+                                "Invalid between arguments: {} {} BETWEEN {} AND {}",
+                                expr, negated_str, low, high
+                            ))
+                        }
+                    }?;
+
+                    if negated {
+                        result = !result;
+                    }
+
+                    stack.push(Op::Value(Value::Bool(result)));
+                }
+
+                Op::IsInList(negated) => {
+                    let mut result = false;
+                    let expr = stack_pop(&mut params)?;
+
+                    while let Some(elem) = params.pop() {
+                        if !expr.is_same_type(&elem) {
+                            return Error::failure("IN LIST operation contains elements that have a different time than target expression");
+                        }
+
+                        result = match (&expr, elem) {
+                            (Value::Number(ref x), Value::Number(y)) => Ok(*x == y),
+                            (Value::Float(ref x), Value::Float(y)) => {
+                                // We all know doing equality checks over floats is stupid but it is what it is.
+                                Ok(*x == y)
+                            }
+                            (Value::String(ref x), Value::String(ref y)) => Ok(x == y),
+                            (Value::Bool(ref x), Value::Bool(y)) => Ok(*x == y),
+
+                            _ => Error::failure(
+                                "Supposedly unreachable code path reached: IN LIST evaluation",
+                            ),
+                        }?;
+
+                        if result {
+                            break;
+                        }
+                    }
+
+                    if negated {
+                        result = !result;
+                    }
+
+                    params.clear();
+                    stack.push(Op::Value(Value::Bool(result)));
+                }
+
                 _ => {}
             }
         } else {

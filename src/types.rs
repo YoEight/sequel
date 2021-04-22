@@ -25,7 +25,7 @@ impl std::fmt::Display for Value {
 }
 
 impl Value {
-    pub fn is_same_type(&self, value: Value) -> bool {
+    pub fn is_same_type(&self, value: &Value) -> bool {
         match (self, value) {
             (Value::Bool(_), Value::Bool(_)) => true,
             (Value::Number(_), Value::Number(_)) => true,
