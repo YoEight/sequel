@@ -159,9 +159,67 @@ pub fn evaluate(env: &mut types::Env, expr: Expr) -> crate::Result<types::Value>
                         (Value::String(left), Value::String(right), BinaryOperator::NotLike) => {
                             Ok(Value::Bool(!is_string_like(left.as_str(), right.as_str())))
                         }
+                        (Value::String(mut left), Value::String(right), BinaryOperator::StringConcat) => {
+                            left.push_str(right.as_str());
 
-                        _ => Error::failure("toto"),
+                            Ok(Value::String(left)))
+                        }
+
+                        (Value::Bool(left), Value::Bool(right), BinaryOperator::And) => {
+                            Ok(Value::Bool(left && right))
+                        }
+                        (Value::Bool(left), Value::Bool(right), BinaryOperator::Or) => {
+                            Ok(Value::Bool(left || right))
+                        }
+                        (Value::Bool(left), Value::Bool(right), BinaryOperator::Eq) => {
+                            Ok(Value::Bool(left == right))
+                        }
+                        (Value::Bool(left), Value::Bool(right), BinaryOperator::Spaceship) => {
+                            Ok(Value::Bool(left == right))
+                        }
+                        (Value::Bool(left), Value::Bool(right), BinaryOperator::NotEq) => {
+                            Ok(Value::Bool(left != right))
+                        }
+                        (Value::Bool(left), Value::Bool(right), BinaryOperator::Gt) => {
+                            Ok(Value::Bool(left > right))
+                        }
+                        (Value::Bool(left), Value::Bool(right), BinaryOperator::GtEq) => {
+                            Ok(Value::Bool(left >= right))
+                        }
+                        (Value::Bool(left), Value::Bool(right), BinaryOperator::Lt) => {
+                            Ok(Value::Bool(left < right))
+                        }
+                        (Value::Bool(left), Value::Bool(right), BinaryOperator::LtEq) => {
+                            Ok(Value::Bool(left <= right))
+                        }
+
+                        (left, right, op) => Error::failure(format!(
+                            "Unsupported binary operation: {} {} {}",
+                            left, op, right
+                        )),
                     }?;
+
+                    stack.push(Op::Value(result));
+                }
+
+                Op::Unary(op) => {
+                    let expr = stack_pop(&mut params)?;
+
+                    let result = match (expr, op) {
+                        (Value::Number(value), UnaryOperator::Plus) => Ok(Value::Number(value)),
+                        (Value::Number(value), UnaryOperator::Minus) => Ok(Value::Number(-value)),
+
+                        (Value::Float(value), UnaryOperator::Plus) => Ok(Value::Float(value)),
+                        (Value::Float(value), UnaryOperator::Minus) => Ok(Value::Float(-value)),
+
+                        (Value::Bool(value), UnaryOperator::Not) => Ok(Value::Bool(!value)),
+
+                        (value, op) => {
+                            Error::failure(format!("Unsupported unary operation: {} {}", op, value))
+                        }
+                    }?;
+
+                    stack.push(Op::Value(result));
                 }
 
                 Op::Value(value) => params.push(value),
