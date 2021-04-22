@@ -41,6 +41,14 @@ impl Value {
             _ => false,
         }
     }
+
+    pub fn as_bool(&self) -> crate::Result<bool> {
+        if let Value::Bool(value) = self {
+            Ok(*value)
+        } else {
+            Error::failure(format!("Expected boolean got: {}", self))
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -62,7 +70,7 @@ pub enum Op {
     Between(bool),
     Value(Value),
     Expr(sqlparser::ast::Expr),
-    InSsubQuery(bool, BoxStream<'static, Result<Line>>),
+    InSubQuery(bool, BoxStream<'static, Result<Line>>),
 }
 
 #[derive(Copy, Clone, PartialEq, Eq, Hash)]
@@ -70,10 +78,53 @@ pub struct Scope(usize);
 
 pub type Line = HashMap<String, Value>;
 pub type Cache = HashMap<String, Vec<Line>>;
+pub type Fields = Vec<String>;
+
+pub fn project_line(fields: &Fields, line: &mut Line) {
+    if fields.is_empty() {
+        return;
+    }
+
+    line.retain(|key, _| fields.contains(key));
+}
+
+pub fn collect_fields(select: &sqlparser::ast::Select) -> Fields {
+    let mut fields = Vec::new();
+
+    for item in select.projection.iter() {
+        if let sqlparser::ast::SelectItem::UnnamedExpr(expr) = item {
+            match expr {
+                sqlparser::ast::Expr::Identifier(ident) => {
+                    fields.push(ident.value.clone());
+                }
+
+                sqlparser::ast::Expr::CompoundIdentifier(idents) => {
+                    let mut ident = String::new();
+
+                    for elem in idents.iter() {
+                        if ident.is_empty() {
+                            ident.push_str(elem.value.as_str());
+                        } else {
+                            ident.push('.');
+                            ident.push_str(elem.value.as_str());
+                        }
+                    }
+
+                    fields.push(ident);
+                }
+
+                _ => {}
+            }
+        }
+    }
+
+    fields
+}
 
 pub struct Env {
     scope_gen: usize,
     variables: HashMap<Scope, Line>,
+    query_fields: HashMap<sqlparser::ast::Expr, Fields>,
 }
 
 impl Env {
@@ -81,6 +132,7 @@ impl Env {
         Self {
             scope_gen: 0,
             variables: HashMap::new(),
+            query_fields: HashMap::new(),
         }
     }
 
@@ -100,5 +152,13 @@ impl Env {
 
     pub fn get_line(&self, scope: Scope) -> &Line {
         self.variables.get(&scope).expect("scope to be defined")
+    }
+
+    pub fn get_query_fields(&self, query: &sqlparser::ast::Expr) -> crate::Result<&Fields> {
+        if let Some(fields) = self.query_fields.get(query) {
+            Ok(fields)
+        } else {
+            Error::failure(format!("No field registered for query: {}", query))
+        }
     }
 }

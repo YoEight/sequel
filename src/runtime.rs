@@ -310,6 +310,24 @@ pub fn evaluate(env: &mut types::Env, expr: Expr) -> crate::Result<types::Value>
                     stack.push(Op::Value(Value::Bool(result)));
                 }
 
+                Op::InSubQuery(negated, stream) => {
+                    let expr = stack_pop(&mut params)?;
+                    let elem = stack_pop(&mut params)?;
+
+                    if expr.is_null() {
+                        stack.push(Op::Value(expr));
+                        params.clear();
+
+                        continue;
+                    }
+
+                    let skip = elem.is_null() || !elem.as_bool()?;
+
+                    if !skip {
+
+                    }
+                }
+
                 _ => {}
             }
         } else {
