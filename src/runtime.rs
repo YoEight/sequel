@@ -19,6 +19,12 @@ pub async fn evaluate(env: &mut types::Env, expr: Expr) -> crate::Result<types::
     loop {
         if let Some(expr) = stack.pop() {
             match expr {
+                Op::Return => {
+                    if !env.exit_scope() {
+                        break;
+                    }
+                }
+
                 Op::Binary(op) => {
                     let left = stack_pop(&mut params)?;
                     let right = stack_pop(&mut params)?;
@@ -376,7 +382,7 @@ pub async fn evaluate(env: &mut types::Env, expr: Expr) -> crate::Result<types::
                                 stack.push(Op::InSubQuery(
                                     predicate_expr.clone(),
                                     negated,
-                                    line,
+                                    line.clone(),
                                     stream,
                                 ));
 
@@ -384,7 +390,8 @@ pub async fn evaluate(env: &mut types::Env, expr: Expr) -> crate::Result<types::
                                 stack.push(Op::Value(expr));
 
                                 if let Some(predicate_expr) = predicate_expr {
-                                    // TODO - Don't forget to handle scope properly.
+                                    env.merge_scope(line);
+                                    stack.push(Op::Return);
                                     stack.push(Op::Expr(predicate_expr));
                                 } else {
                                     stack.push(Op::Value(Value::Bool(true)));
@@ -398,7 +405,75 @@ pub async fn evaluate(env: &mut types::Env, expr: Expr) -> crate::Result<types::
                     }
                 }
 
-                _ => {}
+                Op::Expr(expr) => match expr {
+                    Expr::Identifier(ident) => {
+                        let value = env.resolve_name(&ident.value)?;
+
+                        stack.push(Op::Value(value.clone()));
+                    }
+
+                    Expr::CompoundIdentifier(idents) => {
+                        let name = types::flatten_idents(&idents);
+                        let value = env.resolve_name(&name)?;
+
+                        stack.push(Op::Value(value.clone()));
+                    }
+
+                    Expr::Value(value) => {
+                        stack.push(Op::Value(Value::from_sql_value(value)?));
+                    }
+
+                    Expr::BinaryOp { left, op, right } => {
+                        stack.push(Op::Binary(op));
+                        stack.push(Op::Expr(*left));
+                        stack.push(Op::Expr(*right));
+                    }
+
+                    Expr::UnaryOp { op, expr } => {
+                        stack.push(Op::Unary(op));
+                        stack.push(Op::Expr(*expr));
+                    }
+
+                    Expr::IsNull(expr) => {
+                        stack.push(Op::IsNull(false));
+                        stack.push(Op::Expr(*expr));
+                    }
+
+                    Expr::IsNotNull(expr) => {
+                        stack.push(Op::IsNull(true));
+                        stack.push(Op::Expr(*expr));
+                    }
+
+                    Expr::Between { expr, negated, low, high } => {
+                        stack.push(Op::Between(negated));
+                        stack.push(Op::Expr(*expr));
+                        stack.push(Op::Expr(*low));
+                        stack.push(Op::Expr(*high));
+                    }
+
+                    Expr::InList {
+                        expr,
+                        list,
+                        negated,
+                    } => {
+                        stack.push(Op::IsInList(negated));
+                        stack.push(Op::Expr(*expr));
+
+                        for elem in list {
+                            stack.push(Op::Expr(elem));
+                        }
+                    }
+
+                    Expr::Nested(expr) => {
+                        stack.push(Op::Expr(*expr));
+                    }
+
+                    Expr::InSubquery { expr, subquery, negated } => {
+
+                    }
+
+                    expr => return Error::failure(format!("Unsupported expression: {}", expr)),
+                }
             }
         } else {
             result = params.pop();
