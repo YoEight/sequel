@@ -469,7 +469,7 @@ pub async fn evaluate(env: &mut types::Env, expr: Expr) -> crate::Result<types::
                     }
 
                     Expr::InSubquery { expr, subquery, negated } => {
-
+                        let info = types::collect_query_info(&subquery)?;
                     }
 
                     expr => return Error::failure(format!("Unsupported expression: {}", expr)),

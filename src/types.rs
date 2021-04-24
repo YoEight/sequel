@@ -56,7 +56,9 @@ impl Value {
                 if num_str.contains('.') {
                     match num_str.parse::<f64>() {
                         Ok(value) => Ok(Value::Float(value)),
-                        Err(e) => Error::failure(format!("Invalid float number value format: {}", e)),
+                        Err(e) => {
+                            Error::failure(format!("Invalid float number value format: {}", e))
+                        }
                     }
                 } else {
                     match num_str.parse::<i64>() {
@@ -66,8 +68,12 @@ impl Value {
                 }
             }
 
-            sqlparser::ast::Value::SingleQuotedString(ref value) => Ok(Value::String(value.clone())),
-            sqlparser::ast::Value::DoubleQuotedString(ref value) => Ok(Value::String(value.clone())),
+            sqlparser::ast::Value::SingleQuotedString(ref value) => {
+                Ok(Value::String(value.clone()))
+            }
+            sqlparser::ast::Value::DoubleQuotedString(ref value) => {
+                Ok(Value::String(value.clone()))
+            }
             sqlparser::ast::Value::Boolean(ref value) => Ok(Value::Bool(*value)),
             sqlparser::ast::Value::Null => Ok(Value::Null),
             wrong => Error::failure(format!("Expected SQL value but got: {}", wrong)),
@@ -161,6 +167,134 @@ pub fn flatten_idents(idents: &Vec<sqlparser::ast::Ident>) -> String {
     ident
 }
 
+fn join_expr(constraint: &sqlparser::ast::JoinConstraint) -> Option<sqlparser::ast::Expr> {
+    if let sqlparser::ast::JoinConstraint::On(expr) = constraint {
+        Some(expr.clone())
+    } else {
+        None
+    }
+}
+
+#[derive(Clone, Debug, Copy, PartialEq, Eq)]
+pub enum JoinType {
+    Inner,
+    Left,
+    Right,
+    Full,
+}
+
+#[derive(Debug, Clone)]
+pub struct Join {
+    pub r#type: JoinType,
+    pub source_name: SourceName,
+    pub expr: Option<sqlparser::ast::Expr>,
+}
+
+#[derive(Debug, Clone)]
+pub struct SourceName {
+    alias: Option<String>,
+    name: String,
+    joins: Vec<Join>,
+}
+
+impl SourceName {
+    pub fn alias(&self) -> Option<&String> {
+        self.alias.as_ref()
+    }
+
+    pub fn name(&self) -> &String {
+        &self.name
+    }
+
+    pub fn joins(&self) -> &[Join] {
+        self.joins.as_slice()
+    }
+}
+
+pub struct QueryInfo {
+    pub fields: Vec<String>,
+    pub source_names: Vec<SourceName>,
+}
+
+pub fn collect_query_info(source: &sqlparser::ast::Query) -> crate::Result<QueryInfo> {
+    let mut info = QueryInfo {
+        fields: Vec::new(),
+        source_names: Vec::new(),
+    };
+
+    if let sqlparser::ast::SetExpr::Select(ref select) = source.body {
+        for item in select.projection.iter() {
+            if let sqlparser::ast::SelectItem::UnnamedExpr(expr) = item {
+                match expr {
+                    sqlparser::ast::Expr::Identifier(ident) => {
+                        info.fields.push(ident.value.clone());
+                    }
+
+                    sqlparser::ast::Expr::CompoundIdentifier(idents) => {
+                        info.fields.push(flatten_idents(&idents));
+                    }
+
+                    _ => {}
+                }
+            }
+        }
+
+        for from in select.from.iter() {
+            if let sqlparser::ast::TableFactor::Table { ref name, ref alias, .. } = from.relation {
+                let name = flatten_idents(&name.0);
+                let alias = alias.as_ref().map(|a| a.name.value.clone());
+
+                let mut joins = Vec::new();
+                for join in from.joins.iter() {
+                    if let sqlparser::ast::TableFactor::Table { ref name, ref alias, .. } = join.relation {
+                        let source_name = SourceName {
+                            name: flatten_idents(&name.0),
+                            alias: alias.as_ref().map(|a| a.name.value.clone()),
+                            joins: Vec::new(),
+                        };
+
+                        let (r#type, expr) = match &join.join_operator {
+                            sqlparser::ast::JoinOperator::Inner(ref expr) => {
+                                (JoinType::Inner, join_expr(expr))
+                            }
+                            sqlparser::ast::JoinOperator::LeftOuter(ref expr) => {
+                                (JoinType::Left, join_expr(expr))
+                            }
+                            sqlparser::ast::JoinOperator::RightOuter(ref expr) => {
+                                (JoinType::Right, join_expr(expr))
+                            }
+                            sqlparser::ast::JoinOperator::FullOuter(ref expr) => {
+                                (JoinType::Full, join_expr(expr))
+                            }
+                            unsupported => {
+                                return Error::failure(format!(
+                                    "Unsupported join strategy: {:?}",
+                                    unsupported
+                                ));
+                            }
+                        };
+
+                        joins.push(Join {
+                            r#type,
+                            source_name,
+                            expr,
+                        });
+                    } else {
+                        return Error::failure(format!(
+                            "Unsupported join naming strategy: {}",
+                            join.relation
+                        ));
+                    }
+                }
+
+                info.source_names.push(SourceName { name, alias, joins });
+            }
+        }
+    }
+
+    Ok(info)
+}
+
 pub struct Env {
     scope_gen: usize,
     prev_scopes: Vec<Scope>,
@@ -189,7 +323,10 @@ impl Env {
     }
 
     pub fn merge_scope(&mut self, line: Line) {
-        let parent = self.variables.get(&self.current_scope).expect("current scope is always defined");
+        let parent = self
+            .variables
+            .get(&self.current_scope)
+            .expect("current scope is always defined");
         let mut parent = parent.clone();
 
         parent.extend(line);
@@ -211,7 +348,11 @@ impl Env {
     // pub fn get_scope_line(&self) ->
 
     pub fn resolve_name(&self, name: &String) -> crate::Result<&Value> {
-        if let Some(value) = self.variables.get(&self.current_scope).and_then(|line| line.get(name)) {
+        if let Some(value) = self
+            .variables
+            .get(&self.current_scope)
+            .and_then(|line| line.get(name))
+        {
             Ok(value)
         } else {
             Error::failure(format!("Field {} not in scope", name))
