@@ -28,6 +28,20 @@ pub async fn evaluate<'a>(
                     }
                 }
 
+                Op::EndOfStream => {
+                    params.push(types::Param::EndOfStream);
+                }
+
+                Op::Suspend(id, info) => {
+                    let suspension = Suspension {
+                        id,
+                        execution_stack: stack,
+                        params,
+                    };
+
+                    return Ok(Either::Left(suspension));
+                }
+
                 Op::Binary(op) => {
                     let left = stack_pop(&mut params)?.as_value()?;
                     let right = stack_pop(&mut params)?.as_value()?;
@@ -320,7 +334,7 @@ pub async fn evaluate<'a>(
                     stack.push(Op::Value(Value::Bool(result)));
                 }
 
-                Op::InSubQuery(predicate_expr, negated, line) => {
+                Op::InSubQuery(id, predicate_expr, negated) => {
                     let expr = stack_pop(&mut params)?.as_value()?;
                     let elem = stack_pop(&mut params)?.as_value()?;
 
@@ -481,8 +495,12 @@ pub async fn evaluate<'a>(
                         subquery,
                         negated,
                     } => {
-                        // let info = types::collect_query_info(&subquery)?;
-                        // stack.push(Op::InSubQuery(info.selection.clone(), negated, None));
+                        let id = uuid::Uuid::new_v4();
+                        let info = types::collect_query_info(&subquery)?;
+
+                        stack.push(Op::InSubQuery(id, *negated, None));
+                        stack.push(Op::Suspend(id, info));
+                        stack.push(Op::Expr(expr));
                     }
 
                     expr => return Error::failure(format!("Unsupported expression: {}", expr)),

@@ -107,11 +107,13 @@ pub enum Op<'a> {
     Value(Value),
     Expr(&'a sqlparser::ast::Expr),
     InSubQuery(
-        Option<&'a sqlparser::ast::Expr>,
+        uuid::Uuid,
         bool,
         Option<Line>,
     ),
     // Select(String),
+    Suspend(uuid::Uuid, QueryInfo),
+    EndOfStream,
     Return,
 }
 
@@ -421,8 +423,9 @@ pub enum SuspensionType {
 }
 
 pub struct Suspension<'a> {
+    pub(crate) id: uuid::Uuid,
     pub(crate) execution_stack: Vec<Op<'a>>,
-    pub(crate) params: Vec<Value>,
+    pub(crate) params: Vec<Param>,
 }
 
 #[derive(Debug, Eq, PartialEq)]
