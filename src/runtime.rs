@@ -9,12 +9,12 @@ fn stack_pop<A>(stack: &mut Vec<A>) -> crate::Result<A> {
     }
 }
 
-pub async fn evaluate(
+pub async fn evaluate<'a>(
     env: &mut types::Env,
-    expr: Expr,
-) -> crate::Result<Either<Suspension, types::Value>> {
+    expr: &'a Expr,
+) -> crate::Result<Either<Suspension<'a>, types::Value>> {
     let mut params = Vec::<types::Param>::new();
-    let mut stack = Vec::<Op>::new();
+    let mut stack = Vec::<Op<'a>>::new();
     let mut result = None;
 
     stack.push(Op::Expr(expr));
@@ -334,78 +334,78 @@ pub async fn evaluate(
                     let skip = elem.is_null() || !elem.as_bool()?;
 
                     if !skip {
-                        if line.len() == 1 {
-                            for (_, elem) in line {
-                                if !expr.is_same_type(&elem) {
-                                    return Error::failure(format!("Different types used when consuming subquery {:?} and {:?}", expr, elem));
-                                }
-
-                                match (&expr, elem) {
-                                    (Value::Number(ref expr), Value::Number(elem))
-                                        if *expr == elem =>
-                                    {
-                                        stack.push(Op::Value(Value::Bool(!negated)));
-                                    }
-
-                                    (Value::Float(ref expr), Value::Float(elem))
-                                        if *expr == elem =>
-                                    {
-                                        stack.push(Op::Value(Value::Bool(!negated)));
-                                    }
-
-                                    (Value::String(ref expr), Value::String(ref elem))
-                                        if expr == elem =>
-                                    {
-                                        stack.push(Op::Value(Value::Bool(!negated)));
-                                    }
-
-                                    (Value::Bool(ref expr), Value::Bool(elem)) if *expr == elem => {
-                                        stack.push(Op::Value(Value::Bool(!negated)));
-                                    }
-
-                                    (expr, elem) => {
-                                        return Error::failure(format!("Unreachable code path reached in InSubQuery evaluation: {} {}", expr, elem));
-                                    }
-                                }
-                            }
-
-                            continue;
-                        }
+                        // if line.len() == 1 {
+                        //     for (_, elem) in line {
+                        //         if !expr.is_same_type(&elem) {
+                        //             return Error::failure(format!("Different types used when consuming subquery {:?} and {:?}", expr, elem));
+                        //         }
+                        //
+                        //         match (&expr, elem) {
+                        //             (Value::Number(ref expr), Value::Number(elem))
+                        //                 if *expr == elem =>
+                        //             {
+                        //                 stack.push(Op::Value(Value::Bool(!negated)));
+                        //             }
+                        //
+                        //             (Value::Float(ref expr), Value::Float(elem))
+                        //                 if *expr == elem =>
+                        //             {
+                        //                 stack.push(Op::Value(Value::Bool(!negated)));
+                        //             }
+                        //
+                        //             (Value::String(ref expr), Value::String(ref elem))
+                        //                 if expr == elem =>
+                        //             {
+                        //                 stack.push(Op::Value(Value::Bool(!negated)));
+                        //             }
+                        //
+                        //             (Value::Bool(ref expr), Value::Bool(elem)) if *expr == elem => {
+                        //                 stack.push(Op::Value(Value::Bool(!negated)));
+                        //             }
+                        //
+                        //             (expr, elem) => {
+                        //                 return Error::failure(format!("Unreachable code path reached in InSubQuery evaluation: {} {}", expr, elem));
+                        //             }
+                        //         }
+                        //     }
+                        //
+                        //     continue;
+                        // }
 
                         return Error::failure("in-sub query must only have one column");
                     }
 
-                    match stream.try_next().await {
-                        Err(e) => {
-                            return Error::failure(format!("Error when consuming subquery: {}", e));
-                        }
-
-                        Ok(line) => {
-                            if let Some(line) = line {
-                                stack.push(Op::InSubQuery(
-                                    predicate_expr.clone(),
-                                    negated,
-                                    line.clone(),
-                                    stream,
-                                ));
-
-                                // We push back onto the stack the left-side expression we already computed.
-                                stack.push(Op::Value(expr));
-
-                                if let Some(predicate_expr) = predicate_expr {
-                                    env.merge_scope(line);
-                                    stack.push(Op::Return);
-                                    stack.push(Op::Expr(predicate_expr));
-                                } else {
-                                    stack.push(Op::Value(Value::Bool(true)));
-                                }
-
-                                continue;
-                            }
-
-                            stack.push(Op::Value(Value::Bool(negated)));
-                        }
-                    }
+                    // match stream.try_next().await {
+                    //     Err(e) => {
+                    //         return Error::failure(format!("Error when consuming subquery: {}", e));
+                    //     }
+                    //
+                    //     Ok(line) => {
+                    //         if let Some(line) = line {
+                    //             stack.push(Op::InSubQuery(
+                    //                 predicate_expr.clone(),
+                    //                 negated,
+                    //                 line.clone(),
+                    //                 stream,
+                    //             ));
+                    //
+                    //             // We push back onto the stack the left-side expression we already computed.
+                    //             stack.push(Op::Value(expr));
+                    //
+                    //             if let Some(predicate_expr) = predicate_expr {
+                    //                 env.merge_scope(line);
+                    //                 stack.push(Op::Return);
+                    //                 stack.push(Op::Expr(predicate_expr));
+                    //             } else {
+                    //                 stack.push(Op::Value(Value::Bool(true)));
+                    //             }
+                    //
+                    //             continue;
+                    //         }
+                    //
+                    //         stack.push(Op::Value(Value::Bool(negated)));
+                    //     }
+                    // }
                 }
 
                 Op::Expr(expr) => match expr {
@@ -427,24 +427,24 @@ pub async fn evaluate(
                     }
 
                     Expr::BinaryOp { left, op, right } => {
-                        stack.push(Op::Binary(op));
-                        stack.push(Op::Expr(*left));
-                        stack.push(Op::Expr(*right));
+                        stack.push(Op::Binary(op.clone()));
+                        stack.push(Op::Expr(left));
+                        stack.push(Op::Expr(right));
                     }
 
                     Expr::UnaryOp { op, expr } => {
-                        stack.push(Op::Unary(op));
-                        stack.push(Op::Expr(*expr));
+                        stack.push(Op::Unary(op.clone()));
+                        stack.push(Op::Expr(expr));
                     }
 
                     Expr::IsNull(expr) => {
                         stack.push(Op::IsNull(false));
-                        stack.push(Op::Expr(*expr));
+                        stack.push(Op::Expr(expr));
                     }
 
                     Expr::IsNotNull(expr) => {
                         stack.push(Op::IsNull(true));
-                        stack.push(Op::Expr(*expr));
+                        stack.push(Op::Expr(expr));
                     }
 
                     Expr::Between {
@@ -453,10 +453,10 @@ pub async fn evaluate(
                         low,
                         high,
                     } => {
-                        stack.push(Op::Between(negated));
-                        stack.push(Op::Expr(*expr));
-                        stack.push(Op::Expr(*low));
-                        stack.push(Op::Expr(*high));
+                        stack.push(Op::Between(*negated));
+                        stack.push(Op::Expr(expr));
+                        stack.push(Op::Expr(low));
+                        stack.push(Op::Expr(high));
                     }
 
                     Expr::InList {
@@ -464,8 +464,8 @@ pub async fn evaluate(
                         list,
                         negated,
                     } => {
-                        stack.push(Op::IsInList(negated));
-                        stack.push(Op::Expr(*expr));
+                        stack.push(Op::IsInList(*negated));
+                        stack.push(Op::Expr(expr));
 
                         for elem in list {
                             stack.push(Op::Expr(elem));
@@ -473,7 +473,7 @@ pub async fn evaluate(
                     }
 
                     Expr::Nested(expr) => {
-                        stack.push(Op::Expr(*expr));
+                        stack.push(Op::Expr(expr));
                     }
 
                     Expr::InSubquery {
@@ -481,8 +481,8 @@ pub async fn evaluate(
                         subquery,
                         negated,
                     } => {
-                        let info = types::collect_query_info(&subquery)?;
-                        stack.push(Op::InSubQuery(info.selection.clone(), negated, None));
+                        // let info = types::collect_query_info(&subquery)?;
+                        // stack.push(Op::InSubQuery(info.selection.clone(), negated, None));
                     }
 
                     expr => return Error::failure(format!("Unsupported expression: {}", expr)),

@@ -50,7 +50,7 @@ impl Value {
         }
     }
 
-    pub fn from_sql_value(value: sqlparser::ast::Value) -> crate::Result<Self> {
+    pub fn from_sql_value(value: &sqlparser::ast::Value) -> crate::Result<Self> {
         match value {
             sqlparser::ast::Value::Number(ref num_str, _) => {
                 if num_str.contains('.') {
@@ -98,20 +98,20 @@ impl std::fmt::Display for Error {
 
 pub type Result<A> = std::result::Result<A, Error>;
 
-pub enum Op {
+pub enum Op<'a> {
     Binary(sqlparser::ast::BinaryOperator),
     Unary(sqlparser::ast::UnaryOperator),
     IsNull(bool),
     IsInList(bool),
     Between(bool),
     Value(Value),
-    Expr(sqlparser::ast::Expr),
+    Expr(&'a sqlparser::ast::Expr),
     InSubQuery(
-        Option<sqlparser::ast::Expr>,
+        Option<&'a sqlparser::ast::Expr>,
         bool,
         Option<Line>,
     ),
-    Select(String),
+    // Select(String),
     Return,
 }
 
@@ -420,8 +420,8 @@ pub enum SuspensionType {
     Next8,
 }
 
-pub struct Suspension {
-    pub(crate) execution_stack: Vec<Op>,
+pub struct Suspension<'a> {
+    pub(crate) execution_stack: Vec<Op<'a>>,
     pub(crate) params: Vec<Value>,
 }
 
