@@ -1,4 +1,4 @@
-use crate::types::{self, Error, Op, Value};
+use crate::types::{self, Either, Suspension, Error, Op, Value};
 use futures::TryStreamExt;
 use sqlparser::ast::{BinaryOperator, Expr, UnaryOperator};
 
@@ -9,8 +9,11 @@ fn stack_pop<A>(stack: &mut Vec<A>) -> crate::Result<A> {
     }
 }
 
-pub async fn evaluate(env: &mut types::Env, expr: Expr) -> crate::Result<types::Value> {
-    let mut params = Vec::<Value>::new();
+pub async fn evaluate(
+    env: &mut types::Env,
+    expr: Expr,
+) -> crate::Result<Either<Suspension, types::Value>> {
+    let mut params = Vec::<types::Param>::new();
     let mut stack = Vec::<Op>::new();
     let mut result = None;
 
@@ -26,8 +29,8 @@ pub async fn evaluate(env: &mut types::Env, expr: Expr) -> crate::Result<types::
                 }
 
                 Op::Binary(op) => {
-                    let left = stack_pop(&mut params)?;
-                    let right = stack_pop(&mut params)?;
+                    let left = stack_pop(&mut params)?.as_value()?;
+                    let right = stack_pop(&mut params)?.as_value()?;
 
                     if left.is_null() && right.is_null() && op == BinaryOperator::Spaceship {
                         stack.push(Op::Value(Value::Bool(true)));
@@ -214,7 +217,7 @@ pub async fn evaluate(env: &mut types::Env, expr: Expr) -> crate::Result<types::
                 }
 
                 Op::Unary(op) => {
-                    let expr = stack_pop(&mut params)?;
+                    let expr = stack_pop(&mut params)?.as_value()?;
 
                     let result = match (expr, op) {
                         (Value::Number(value), UnaryOperator::Plus) => Ok(Value::Number(value)),
@@ -233,12 +236,12 @@ pub async fn evaluate(env: &mut types::Env, expr: Expr) -> crate::Result<types::
                     stack.push(Op::Value(result));
                 }
 
-                Op::Value(value) => params.push(value),
+                Op::Value(value) => params.push(types::Param::Value(value)),
 
                 Op::Between(negated) => {
-                    let expr = stack_pop(&mut params)?;
-                    let low = stack_pop(&mut params)?;
-                    let high = stack_pop(&mut params)?;
+                    let expr = stack_pop(&mut params)?.as_value()?;
+                    let low = stack_pop(&mut params)?.as_value()?;
+                    let high = stack_pop(&mut params)?.as_value()?;
 
                     let mut result = match (expr, low, high) {
                         (Value::Number(value), Value::Number(low), Value::Number(high)) => {
@@ -269,9 +272,9 @@ pub async fn evaluate(env: &mut types::Env, expr: Expr) -> crate::Result<types::
 
                 Op::IsInList(negated) => {
                     let mut result = false;
-                    let expr = stack_pop(&mut params)?;
+                    let expr = stack_pop(&mut params)?.as_value()?;
 
-                    while let Some(elem) = params.pop() {
+                    while let Some(elem) = params.pop().map(|p| p.as_value()).transpose()? {
                         if !expr.is_same_type(&elem) {
                             return Error::failure("IN LIST operation contains elements that have a different time than target expression");
                         }
@@ -304,7 +307,7 @@ pub async fn evaluate(env: &mut types::Env, expr: Expr) -> crate::Result<types::
                 }
 
                 Op::IsNull(negated) => {
-                    let mut result = if let Value::Null = stack_pop(&mut params)? {
+                    let mut result = if let Value::Null = stack_pop(&mut params)?.as_value()? {
                         true
                     } else {
                         false
@@ -317,9 +320,9 @@ pub async fn evaluate(env: &mut types::Env, expr: Expr) -> crate::Result<types::
                     stack.push(Op::Value(Value::Bool(result)));
                 }
 
-                Op::InSubQuery(predicate_expr, negated, line, mut stream) => {
-                    let expr = stack_pop(&mut params)?;
-                    let elem = stack_pop(&mut params)?;
+                Op::InSubQuery(predicate_expr, negated, line) => {
+                    let expr = stack_pop(&mut params)?.as_value()?;
+                    let elem = stack_pop(&mut params)?.as_value()?;
 
                     if expr.is_null() {
                         stack.push(Op::Value(expr));
@@ -444,7 +447,12 @@ pub async fn evaluate(env: &mut types::Env, expr: Expr) -> crate::Result<types::
                         stack.push(Op::Expr(*expr));
                     }
 
-                    Expr::Between { expr, negated, low, high } => {
+                    Expr::Between {
+                        expr,
+                        negated,
+                        low,
+                        high,
+                    } => {
                         stack.push(Op::Between(negated));
                         stack.push(Op::Expr(*expr));
                         stack.push(Op::Expr(*low));
@@ -468,21 +476,26 @@ pub async fn evaluate(env: &mut types::Env, expr: Expr) -> crate::Result<types::
                         stack.push(Op::Expr(*expr));
                     }
 
-                    Expr::InSubquery { expr, subquery, negated } => {
+                    Expr::InSubquery {
+                        expr,
+                        subquery,
+                        negated,
+                    } => {
                         let info = types::collect_query_info(&subquery)?;
+                        stack.push(Op::InSubQuery(info.selection.clone(), negated, None));
                     }
 
                     expr => return Error::failure(format!("Unsupported expression: {}", expr)),
-                }
+                },
             }
         } else {
-            result = params.pop();
+            result = params.pop().map(|p| p.as_value()).transpose()?;
             break;
         }
     }
 
     if let Some(result) = result {
-        Ok(result)
+        Ok(Either::Right(result))
     } else {
         Error::failure("Unexpected runtime error, no final result")
     }

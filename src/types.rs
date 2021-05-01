@@ -109,9 +109,9 @@ pub enum Op {
     InSubQuery(
         Option<sqlparser::ast::Expr>,
         bool,
-        Line,
-        BoxStream<'static, Result<Line>>,
+        Option<Line>,
     ),
+    Select(String),
     Return,
 }
 
@@ -214,12 +214,14 @@ impl SourceName {
 pub struct QueryInfo {
     pub fields: Vec<String>,
     pub source_names: Vec<SourceName>,
+    pub selection: Option<sqlparser::ast::Expr>,
 }
 
 pub fn collect_query_info(source: &sqlparser::ast::Query) -> crate::Result<QueryInfo> {
     let mut info = QueryInfo {
         fields: Vec::new(),
         source_names: Vec::new(),
+        selection: None,
     };
 
     if let sqlparser::ast::SetExpr::Select(ref select) = source.body {
@@ -240,13 +242,23 @@ pub fn collect_query_info(source: &sqlparser::ast::Query) -> crate::Result<Query
         }
 
         for from in select.from.iter() {
-            if let sqlparser::ast::TableFactor::Table { ref name, ref alias, .. } = from.relation {
+            if let sqlparser::ast::TableFactor::Table {
+                ref name,
+                ref alias,
+                ..
+            } = from.relation
+            {
                 let name = flatten_idents(&name.0);
                 let alias = alias.as_ref().map(|a| a.name.value.clone());
 
                 let mut joins = Vec::new();
                 for join in from.joins.iter() {
-                    if let sqlparser::ast::TableFactor::Table { ref name, ref alias, .. } = join.relation {
+                    if let sqlparser::ast::TableFactor::Table {
+                        ref name,
+                        ref alias,
+                        ..
+                    } = join.relation
+                    {
                         let source_name = SourceName {
                             name: flatten_idents(&name.0),
                             alias: alias.as_ref().map(|a| a.name.value.clone()),
@@ -290,6 +302,8 @@ pub fn collect_query_info(source: &sqlparser::ast::Query) -> crate::Result<Query
                 info.source_names.push(SourceName { name, alias, joins });
             }
         }
+
+        info.selection = select.selection.clone();
     }
 
     Ok(info)
@@ -345,8 +359,6 @@ impl Env {
         }
     }
 
-    // pub fn get_scope_line(&self) ->
-
     pub fn resolve_name(&self, name: &String) -> crate::Result<&Value> {
         if let Some(value) = self
             .variables
@@ -366,4 +378,55 @@ impl Env {
             Error::failure(format!("No field registered for query: {}", query))
         }
     }
+}
+
+#[async_trait::async_trait]
+pub trait DataSource {
+    async fn fetch(&self, name: &SourceName) -> crate::Result<BoxStream<'_, crate::Result<Line>>>;
+}
+
+#[derive(Debug, Clone)]
+pub enum Param {
+    Value(Value),
+    Line(Line),
+    EndOfStream,
+}
+
+impl Param {
+    pub fn as_value(self) -> crate::Result<Value> {
+        if let Param::Value(value) = self {
+            Ok(value)
+        } else {
+            Error::failure(format!(
+                "RUNTIME ERROR: Expected SQL Value but got: {:?}",
+                self
+            ))
+        }
+    }
+
+    pub fn next_line(self) -> crate::Result<Option<Line>> {
+        match self {
+            Param::Line(line) => Ok(Some(line)),
+            Param::EndOfStream => Ok(None),
+            Param::Value(value) => Error::failure(format!(
+                "RUNTIME ERROR: Expected stream but got: {:?}",
+                value
+            )),
+        }
+    }
+}
+
+pub enum SuspensionType {
+    Next8,
+}
+
+pub struct Suspension {
+    pub(crate) execution_stack: Vec<Op>,
+    pub(crate) params: Vec<Value>,
+}
+
+#[derive(Debug, Eq, PartialEq)]
+pub enum Either<A, B> {
+    Left(A),
+    Right(B),
 }
