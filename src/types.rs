@@ -106,11 +106,7 @@ pub enum Op<'a> {
     Between(bool),
     Value(Value),
     Expr(&'a sqlparser::ast::Expr),
-    InSubQuery(
-        uuid::Uuid,
-        bool,
-        Option<Line>,
-    ),
+    InSubQuery(uuid::Uuid, bool, Option<Line>),
     // Select(String),
     Suspend(uuid::Uuid, QueryInfo),
     EndOfStream,
@@ -177,7 +173,7 @@ fn join_expr(constraint: &sqlparser::ast::JoinConstraint) -> Option<sqlparser::a
     }
 }
 
-#[derive(Clone, Debug, Copy, PartialEq, Eq)]
+#[derive(Clone, Debug, Copy, PartialEq, Eq, Hash)]
 pub enum JoinType {
     Inner,
     Left,
@@ -185,14 +181,14 @@ pub enum JoinType {
     Full,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Hash, PartialEq, Eq)]
 pub struct Join {
     pub r#type: JoinType,
     pub source_name: SourceName,
     pub expr: Option<sqlparser::ast::Expr>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Hash, PartialEq, Eq)]
 pub struct SourceName {
     alias: Option<String>,
     name: String,
@@ -432,4 +428,20 @@ pub struct Suspension<'a> {
 pub enum Either<A, B> {
     Left(A),
     Right(B),
+}
+
+impl<A, B> Either<A, B> {
+    pub fn into_right(self) -> Option<B> {
+        match self {
+            Either::Right(b) => Some(b),
+            _ => None,
+        }
+    }
+
+    pub fn into_left(self) -> Option<A> {
+        match self {
+            Either::Left(a) => Some(a),
+            _ => None,
+        }
+    }
 }

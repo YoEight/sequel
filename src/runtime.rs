@@ -1,4 +1,6 @@
-use crate::types::{self, Either, Suspension, Error, Op, Value};
+use crate::types::{self, Either, Error, Op, Suspension, Value};
+use async_stream::stream;
+use futures::stream::BoxStream;
 use futures::TryStreamExt;
 use sqlparser::ast::{BinaryOperator, Expr, UnaryOperator};
 
@@ -9,7 +11,52 @@ fn stack_pop<A>(stack: &mut Vec<A>) -> crate::Result<A> {
     }
 }
 
-pub async fn evaluate<'a>(
+pub async fn run<'a, S>(
+    source: S,
+    query: sqlparser::ast::Query,
+) -> crate::Result<BoxStream<'a, crate::Result<types::Line>>>
+where
+    S: types::DataSource + Send,
+{
+    let info = types::collect_query_info(&query)?;
+    let mut register = std::collections::HashMap::new();
+    for name in info.source_names.iter() {
+        let stream = source.fetch(name).await?;
+        register.insert(name.clone(), stream);
+    }
+
+    let stream = async_stream::try_stream! {
+        let mut env = types::Env::new();
+        let mut offset = 0usize;
+
+        if let sqlparser::ast::SetExpr::Select(select) = query.body {
+            if select.from.is_empty() {
+               let mut line = std::collections::HashMap::new();
+
+               for item in select.projection {
+                   match item {
+                        sqlparser::ast::SelectItem::UnnamedExpr(expr) => {
+                            let value = evaluate(&mut env, &expr)?.into_right().unwrap();
+                            line.insert(offset.to_string(), value);
+
+                            offset += 1;
+                        }
+
+                        _ => {
+
+                        }
+                   }
+               }
+
+               yield line;
+            }
+        }
+    };
+
+    Ok(Box::pin(stream))
+}
+
+pub fn evaluate<'a>(
     env: &mut types::Env,
     expr: &'a Expr,
 ) -> crate::Result<Either<Suspension<'a>, types::Value>> {
@@ -677,5 +724,25 @@ mod like_tests {
         assert!(is_string_like("ax", "a_%"));
         assert!(is_string_like("axx", "a__%"));
         assert!(is_string_like("abazfoo", "a%o"));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn selection_test() -> crate::Result<()> {
+        let query = "select 1 + 2";
+        let query =
+            sqlparser::parser::Parser::parse_sql(&sqlparser::dialect::AnsiDialect {}, query)
+                .unwrap()
+                .pop()
+                .unwrap();
+
+        println!(
+            ">>> {:?}",
+            sqlparser::parser::Parser::parse_sql(
+                &sqlparser::dialect::AnsiDialect {},
+                "select toto, foo from electron"
+            )
+        );
+
+        Ok(())
     }
 }

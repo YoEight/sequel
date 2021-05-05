@@ -12,4 +12,8 @@ futures = "0.3"
 log = "0.4"
 regex = "1"
 async-trait = "0.1"
+async-stream = "0.3"
 uuid = { version = "0.8", features = ["v4"] }
+
+[dev-dependencies]
+tokio = { version = "1", default-features = false, features = ["macros", "rt-multi-thread"] }
