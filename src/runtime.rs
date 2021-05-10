@@ -23,9 +23,14 @@ where
             sqlparser::ast::Statement::Query(query) => {
                 let info = types::collect_query_info(&query)?;
                 let mut register = std::collections::HashMap::new();
-                for name in info.source_names.iter() {
+                for name in info.source_name.iter() {
                     let stream = source.fetch(name).await?;
                     register.insert(name.clone(), stream);
+
+                    for join_name in name.joins.iter() {
+                        let stream = source.fetch(&join_name.source_name).await?;
+                        register.insert(join_name.source_name.clone(), stream);
+                    }
                 }
                 let mut env = types::Env::new();
                 let mut offset = 0usize;
@@ -53,6 +58,13 @@ where
                         }
 
                         yield line;
+                    } else {
+                        if let Some(main_source) = info.source_name.as_ref() {
+                            // It means we need to load the main source table entirely in memory.
+                            if info.contains_right_join() {
+
+                            }
+                        }
                     }
                 }
             }
@@ -750,7 +762,7 @@ mod like_tests {
     async fn selection_test() -> crate::Result<()> {
         use futures::TryStreamExt;
 
-        let query = "select 1 + 2 as toto, 'foo'";
+        let query = "select 1 + 2 from toto join foo on x = y join bar on x = z";
         let query =
             sqlparser::parser::Parser::parse_sql(&sqlparser::dialect::AnsiDialect {}, query)
                 .unwrap()

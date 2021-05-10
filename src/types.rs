@@ -190,9 +190,9 @@ pub struct Join {
 
 #[derive(Debug, Clone, Hash, PartialEq, Eq)]
 pub struct SourceName {
-    alias: Option<String>,
-    name: String,
-    joins: Vec<Join>,
+    pub alias: Option<String>,
+    pub name: String,
+    pub joins: Vec<Join>,
 }
 
 impl SourceName {
@@ -209,16 +209,31 @@ impl SourceName {
     }
 }
 
+#[derive(Debug)]
 pub struct QueryInfo {
     pub fields: Vec<String>,
-    pub source_names: Vec<SourceName>,
+    pub source_name: Option<SourceName>,
     pub selection: Option<sqlparser::ast::Expr>,
+}
+
+impl QueryInfo {
+    pub fn contains_right_join(&self) -> bool {
+        if let Some(source_name) = self.source_name.as_ref() {
+            for join in source_name.joins.iter() {
+                if join.r#type == JoinType::Right || join.r#type == JoinType::Full {
+                    return true;
+                }
+            }
+        }
+
+        false
+    }
 }
 
 pub fn collect_query_info(source: &sqlparser::ast::Query) -> crate::Result<QueryInfo> {
     let mut info = QueryInfo {
         fields: Vec::new(),
-        source_names: Vec::new(),
+        source_name: None,
         selection: None,
     };
 
@@ -239,6 +254,7 @@ pub fn collect_query_info(source: &sqlparser::ast::Query) -> crate::Result<Query
             }
         }
 
+        // We only support single FROM list.
         for from in select.from.iter() {
             if let sqlparser::ast::TableFactor::Table {
                 ref name,
@@ -297,7 +313,8 @@ pub fn collect_query_info(source: &sqlparser::ast::Query) -> crate::Result<Query
                     }
                 }
 
-                info.source_names.push(SourceName { name, alias, joins });
+                info.source_name = Some(SourceName { name, alias, joins });
+                break;
             }
         }
 
