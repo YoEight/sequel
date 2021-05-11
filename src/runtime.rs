@@ -60,9 +60,45 @@ where
                         yield line;
                     } else {
                         if let Some(main_source) = info.source_name.as_ref() {
+                            let mut joins_vecs = Vec::new();
+
+                            // We have no other choice that loading all joinded tables in memory.
+                            // TODO - There are probably better ways to achieve this but those are
+                            // out of my reach right now.
+                            for join in main_source.joins.iter() {
+                                let vs: Vec<types::Line> = source.fetch(&join.source_name).await?.try_collect().await?;
+                                joins_vecs.push((join, vs));
+                            }
+
                             // It means we need to load the main source table entirely in memory.
                             if info.contains_right_join() {
+                                let main_source_vec: Vec<types::Line> = source.fetch(&main_source).await?.try_collect().await?;
+                            } else {
+                                // it begs the question if it's actually useful to do that, considering only
+                                // simple queries would benefit it.
+                                let mut main_source_stream = source.fetch(&main_source).await?;
 
+                                while let Some(mut line) = main_source_stream.try_next().await? {
+                                    line = types::rename_line(&main_source, line);
+
+                                    for (join, join_vec) in joins_vecs.iter() {
+                                        match join.r#type {
+                                            types::JoinType::Inner => {
+                                                for join_line in join_vec.iter() {
+                                                    let renamed_join_line = types::rename_line(&join.source_name, join_line.clone());
+                                                    let mut cloned_main_line = line.clone();
+
+                                                    cloned_main_line.extend(renamed_join_line);
+                                                    // TODO - Needs to evaluate the where expression here!
+                                                }
+                                            }
+                                            types::JoinType::Left => {}
+
+                                            // Not possible because we already pre-checked we are not a right or full join,
+                                            _ => unreachable!(),
+                                        }
+                                    }
+                                }
                             }
                         }
                     }

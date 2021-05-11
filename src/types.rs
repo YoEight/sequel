@@ -150,6 +150,20 @@ pub fn collect_fields(select: &sqlparser::ast::Select) -> Fields {
     fields
 }
 
+pub fn rename_line(source_name: &SourceName, mut line: Line) -> Line {
+    if let Some(alias) = source_name.alias() {
+        let mut renamed_line = HashMap::with_capacity(line.capacity());
+
+        for (key, value) in line {
+            renamed_line.insert(format!("{}.{}", alias, key), value);
+        }
+
+        line = renamed_line;
+    }
+
+    line
+}
+
 pub fn flatten_idents(idents: &Vec<sqlparser::ast::Ident>) -> String {
     let mut ident = String::new();
 
