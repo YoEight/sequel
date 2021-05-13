@@ -22,18 +22,18 @@ where
         match statement {
             sqlparser::ast::Statement::Query(query) => {
                 let info = types::collect_query_info(&query)?;
-                let mut register = std::collections::HashMap::new();
-                for name in info.source_name.iter() {
-                    let stream = source.fetch(name).await?;
-                    register.insert(name.clone(), stream);
-
-                    for join_name in name.joins.iter() {
-                        let stream = source.fetch(&join_name.source_name).await?;
-                        register.insert(join_name.source_name.clone(), stream);
-                    }
-                }
+                let mut sub_queries_register = std::collections::HashMap::new();
                 let mut env = types::Env::new();
                 let mut offset = 0usize;
+
+                for name in info.sub_queries.iter() {
+                    let sub_query_vec: Vec<types::Line> = source.fetch(name)
+                        .await?
+                        .try_collect()
+                        .await?;
+
+                    sub_queries_register.insert(name.clone(), sub_query_vec);
+                }
 
                 if let sqlparser::ast::SetExpr::Select(select) = query.body {
                     if select.from.is_empty() {
@@ -60,6 +60,7 @@ where
                         yield line;
                     } else {
                         if let Some(main_source) = info.source_name.as_ref() {
+                            let mut env = types::Env::new();
                             let mut joins_vecs = Vec::new();
 
                             // We have no other choice that loading all joinded tables in memory.
@@ -79,16 +80,28 @@ where
                                 let mut main_source_stream = source.fetch(&main_source).await?;
 
                                 while let Some(mut line) = main_source_stream.try_next().await? {
+                                    let mut skip = false;
                                     line = types::rename_line(&main_source, line);
+                                    env.enter_scope(line);
 
                                     for (join, join_vec) in joins_vecs.iter() {
                                         match join.r#type {
                                             types::JoinType::Inner => {
                                                 for join_line in join_vec.iter() {
-                                                    let renamed_join_line = types::rename_line(&join.source_name, join_line.clone());
-                                                    let mut cloned_main_line = line.clone();
+                                                    env.merge_scope(types::rename_line(&join.source_name, join_line.clone()));
 
-                                                    cloned_main_line.extend(renamed_join_line);
+                                                    if let Some(expr) = join.expr.as_ref() {
+                                                        // We can't end up in a suspension use-case because not possible
+                                                        // when joining tables.
+                                                        if let types::Either::Right(value) = evaluate(&mut env, expr)? {
+                                                            if value.is_null() || !value.as_bool()? {
+                                                                env.exit_scope();
+                                                                skip = true;
+
+                                                                break;
+                                                            }
+                                                        }
+                                                    }
                                                     // TODO - Needs to evaluate the where expression here!
                                                 }
                                             }
@@ -97,6 +110,14 @@ where
                                             // Not possible because we already pre-checked we are not a right or full join,
                                             _ => unreachable!(),
                                         }
+
+                                        if skip {
+                                            break;
+                                        }
+                                    }
+
+                                    if skip {
+                                        continue;
                                     }
                                 }
                             }

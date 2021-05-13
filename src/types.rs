@@ -1,4 +1,5 @@
 use futures::stream::BoxStream;
+use sqlparser::ast::Expr;
 use std::collections::HashMap;
 
 #[derive(Debug, Clone)]
@@ -228,9 +229,19 @@ pub struct QueryInfo {
     pub fields: Vec<String>,
     pub source_name: Option<SourceName>,
     pub selection: Option<sqlparser::ast::Expr>,
+    pub sub_queries: Vec<SourceName>,
 }
 
 impl QueryInfo {
+    pub fn new() -> Self {
+        Self {
+            fields: Vec::new(),
+            source_name: None,
+            selection: None,
+            sub_queries: Vec::new(),
+        }
+    }
+
     pub fn contains_right_join(&self) -> bool {
         if let Some(source_name) = self.source_name.as_ref() {
             for join in source_name.joins.iter() {
@@ -245,11 +256,7 @@ impl QueryInfo {
 }
 
 pub fn collect_query_info(source: &sqlparser::ast::Query) -> crate::Result<QueryInfo> {
-    let mut info = QueryInfo {
-        fields: Vec::new(),
-        source_name: None,
-        selection: None,
-    };
+    let mut info = QueryInfo::new();
 
     if let sqlparser::ast::SetExpr::Select(ref select) = source.body {
         for item in select.projection.iter() {
@@ -333,6 +340,65 @@ pub fn collect_query_info(source: &sqlparser::ast::Query) -> crate::Result<Query
         }
 
         info.selection = select.selection.clone();
+
+        // We collect sub-queries to prefetch and ease their execution later on.
+        if let Some(expr) = info.selection.as_ref() {
+            let mut stack = vec![expr];
+            while let Some(expr) = stack.pop() {
+                match expr {
+                    Expr::BinaryOp { left, right, .. } => {
+                        stack.push(left);
+                        stack.push(right);
+                    }
+
+                    Expr::UnaryOp { expr, .. } => {
+                        stack.push(expr);
+                    }
+
+                    Expr::IsNull(expr) => {
+                        stack.push(expr);
+                    }
+
+                    Expr::IsNotNull(expr) => {
+                        stack.push(expr);
+                    }
+
+                    Expr::Nested(expr) => {
+                        stack.push(expr);
+                    }
+
+                    Expr::InSubquery { subquery, .. } => {
+                        if let sqlparser::ast::SetExpr::Select(ref select) = subquery.body {
+                            for table in select.from.iter() {
+                                if let sqlparser::ast::TableFactor::Table {
+                                    ref name,
+                                    ref alias,
+                                    ..
+                                } = table.relation
+                                {
+                                    let name = SourceName {
+                                        name: flatten_idents(&name.0),
+                                        alias: alias.as_ref().map(|a| a.name.value.clone()),
+                                        joins: Vec::new(),
+                                    };
+
+                                    info.sub_queries.push(name);
+                                }
+
+                                if let Some(expr) = select.selection.as_ref() {
+                                    stack.push(expr);
+                                }
+                            }
+                        }
+                    }
+
+                    _ => {
+                        // We don't do anything because in those situation,
+                        // there is no way we will find a sub-query.
+                    }
+                }
+            }
+        }
     }
 
     Ok(info)
