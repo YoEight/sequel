@@ -1,4 +1,4 @@
-use crate::types::{self, Either, Error, Op, Suspension, Value};
+use crate::types::{self, Either, Error, Op, Register, Suspension, Value};
 use async_stream::stream;
 use futures::stream::BoxStream;
 use futures::TryStreamExt;
@@ -42,14 +42,14 @@ where
                         for item in select.projection {
                             match item {
                                 sqlparser::ast::SelectItem::UnnamedExpr(expr) => {
-                                    let value = evaluate(&mut env, &expr)?.into_right().unwrap();
+                                    let value = evaluate(&mut env, &sub_queries_register, &expr)?.into_right().unwrap();
                                     line.insert(offset.to_string(), value);
 
                                     offset += 1;
                                 }
 
                                 sqlparser::ast::SelectItem::ExprWithAlias { expr, alias } => {
-                                    let value = evaluate(&mut env, &expr)?.into_right().unwrap();
+                                    let value = evaluate(&mut env, &sub_queries_register, &expr)?.into_right().unwrap();
                                     line.insert(alias.value, value);
                                 }
 
@@ -63,7 +63,7 @@ where
                             let mut env = types::Env::new();
                             let mut joins_vecs = Vec::new();
 
-                            // We have no other choice that loading all joinded tables in memory.
+                            // We have no other choice that loading all joined tables in memory.
                             // TODO - There are probably better ways to achieve this but those are
                             // out of my reach right now.
                             for join in main_source.joins.iter() {
@@ -93,7 +93,7 @@ where
                                                     if let Some(expr) = join.expr.as_ref() {
                                                         // We can't end up in a suspension use-case because not possible
                                                         // when joining tables.
-                                                        if let types::Either::Right(value) = evaluate(&mut env, expr)? {
+                                                        if let types::Either::Right(value) = evaluate(&mut env, &sub_queries_register, expr)? {
                                                             if value.is_null() || !value.as_bool()? {
                                                                 env.exit_scope();
                                                                 skip = true;
@@ -102,7 +102,6 @@ where
                                                             }
                                                         }
                                                     }
-                                                    // TODO - Needs to evaluate the where expression here!
                                                 }
                                             }
                                             types::JoinType::Left => {}
@@ -113,6 +112,25 @@ where
 
                                         if skip {
                                             break;
+                                        }
+                                    }
+
+                                    // Where evaluation loop.
+                                    if let Some(expr) = info.selection.as_ref() {
+                                        loop {
+                                            match evaluate(&mut env, &sub_queries_register, expr)? {
+                                                Either::Left(susp) => {
+
+                                                }
+                                                Either::Right(value) => {
+                                                    if value.is_null() || !value.as_bool()? {
+                                                        env.exit_scope();
+                                                        skip = true;
+
+                                                        break;
+                                                    }
+                                                }
+                                            }
                                         }
                                     }
 
@@ -134,6 +152,7 @@ where
 
 pub fn evaluate<'a>(
     env: &mut types::Env,
+    sub_query_register: &Register,
     expr: &'a Expr,
 ) -> crate::Result<Either<Suspension<'a>, types::Value>> {
     let mut params = Vec::<types::Param>::new();
@@ -622,8 +641,18 @@ pub fn evaluate<'a>(
                         let info = types::collect_query_info(&subquery)?;
 
                         stack.push(Op::InSubQuery(id, *negated, None));
-                        stack.push(Op::Suspend(id, info));
                         stack.push(Op::Expr(expr));
+
+                        let sub_query_name = info
+                            .source_name
+                            .as_ref()
+                            .expect("sub-query source_name must be defined");
+
+                        let sub_query_data = sub_query_register
+                            .get(sub_query_name)
+                            .expect("sub-query data must be defined");
+
+                        for data in sub_query_data.iter() {}
                     }
 
                     expr => return Error::failure(format!("Unsupported expression: {}", expr)),

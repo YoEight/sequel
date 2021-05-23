@@ -1,6 +1,7 @@
 use futures::stream::BoxStream;
 use sqlparser::ast::Expr;
 use std::collections::HashMap;
+use std::slice::Iter;
 
 #[derive(Debug, Clone)]
 pub enum Value {
@@ -107,7 +108,7 @@ pub enum Op<'a> {
     Between(bool),
     Value(Value),
     Expr(&'a sqlparser::ast::Expr),
-    InSubQuery(uuid::Uuid, bool, Option<Line>),
+    InSubQuery(uuid::Uuid, bool, Iter<'a, Line>),
     // Select(String),
     Suspend(uuid::Uuid, QueryInfo),
     EndOfStream,
@@ -542,3 +543,5 @@ impl<A, B> Either<A, B> {
         }
     }
 }
+
+pub type Register = HashMap<SourceName, Vec<Line>>;
