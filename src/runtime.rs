@@ -1,8 +1,9 @@
-use crate::types::{self, Either, Error, Op, Register, Suspension, Value};
 use async_stream::stream;
 use futures::stream::BoxStream;
 use futures::TryStreamExt;
 use sqlparser::ast::{BinaryOperator, Expr, UnaryOperator};
+
+use crate::types::{self, Either, Error, Line, Op, QueryInfo, Register, Suspension, Value};
 
 fn stack_pop<A>(stack: &mut Vec<A>) -> crate::Result<A> {
     match stack.pop() {
@@ -26,7 +27,7 @@ where
                 let mut env = types::Env::new();
                 let mut offset = 0usize;
 
-                for name in info.sub_queries.iter() {
+                for name in info.sub_queries() {
                     let sub_query_vec: Vec<types::Line> = source.fetch(name)
                         .await?
                         .try_collect()
@@ -42,14 +43,14 @@ where
                         for item in select.projection {
                             match item {
                                 sqlparser::ast::SelectItem::UnnamedExpr(expr) => {
-                                    let value = evaluate(&mut env, &sub_queries_register, &expr)?.into_right().unwrap();
+                                    let value = evaluate(&mut env, &info, &sub_queries_register, &expr)?.into_right().unwrap();
                                     line.insert(offset.to_string(), value);
 
                                     offset += 1;
                                 }
 
                                 sqlparser::ast::SelectItem::ExprWithAlias { expr, alias } => {
-                                    let value = evaluate(&mut env, &sub_queries_register, &expr)?.into_right().unwrap();
+                                    let value = evaluate(&mut env, &info, &sub_queries_register, &expr)?.into_right().unwrap();
                                     line.insert(alias.value, value);
                                 }
 
@@ -93,7 +94,7 @@ where
                                                     if let Some(expr) = join.expr.as_ref() {
                                                         // We can't end up in a suspension use-case because not possible
                                                         // when joining tables.
-                                                        if let types::Either::Right(value) = evaluate(&mut env, &sub_queries_register, expr)? {
+                                                        if let types::Either::Right(value) = evaluate(&mut env, &info, &sub_queries_register, expr)? {
                                                             if value.is_null() || !value.as_bool()? {
                                                                 env.exit_scope();
                                                                 skip = true;
@@ -118,7 +119,7 @@ where
                                     // Where evaluation loop.
                                     if let Some(expr) = info.selection.as_ref() {
                                         loop {
-                                            match evaluate(&mut env, &sub_queries_register, expr)? {
+                                            match evaluate(&mut env, &info, &sub_queries_register, expr)? {
                                                 Either::Left(susp) => {
 
                                                 }
@@ -152,12 +153,14 @@ where
 
 pub fn evaluate<'a>(
     env: &mut types::Env,
+    main_info: &QueryInfo,
     sub_query_register: &Register,
     expr: &'a Expr,
 ) -> crate::Result<Either<Suspension<'a>, types::Value>> {
     let mut params = Vec::<types::Param>::new();
     let mut stack = Vec::<Op<'a>>::new();
     let mut result = None;
+    let empty_line: Line = Default::default();
 
     stack.push(Op::Expr(expr));
 
@@ -168,20 +171,6 @@ pub fn evaluate<'a>(
                     if !env.exit_scope() {
                         break;
                     }
-                }
-
-                Op::EndOfStream => {
-                    params.push(types::Param::EndOfStream);
-                }
-
-                Op::Suspend(id, info) => {
-                    let suspension = Suspension {
-                        id,
-                        execution_stack: stack,
-                        params,
-                    };
-
-                    return Ok(Either::Left(suspension));
                 }
 
                 Op::Binary(op) => {
@@ -476,92 +465,89 @@ pub fn evaluate<'a>(
                     stack.push(Op::Value(Value::Bool(result)));
                 }
 
-                Op::InSubQuery(id, predicate_expr, negated) => {
+                Op::InSubQuery {
+                    subquery,
+                    negated,
+                    mut data,
+                    current_line,
+                } => {
                     let expr = stack_pop(&mut params)?.as_value()?;
-                    let elem = stack_pop(&mut params)?.as_value()?;
+                    let predicate_result = stack_pop(&mut params)?.as_value()?;
 
                     if expr.is_null() {
                         stack.push(Op::Value(expr));
-                        params.clear();
 
                         continue;
                     }
 
-                    let skip = elem.is_null() || !elem.as_bool()?;
+                    let skip = predicate_result.is_null() || predicate_result.as_bool()?;
 
                     if !skip {
-                        // if line.len() == 1 {
-                        //     for (_, elem) in line {
-                        //         if !expr.is_same_type(&elem) {
-                        //             return Error::failure(format!("Different types used when consuming subquery {:?} and {:?}", expr, elem));
-                        //         }
-                        //
-                        //         match (&expr, elem) {
-                        //             (Value::Number(ref expr), Value::Number(elem))
-                        //                 if *expr == elem =>
-                        //             {
-                        //                 stack.push(Op::Value(Value::Bool(!negated)));
-                        //             }
-                        //
-                        //             (Value::Float(ref expr), Value::Float(elem))
-                        //                 if *expr == elem =>
-                        //             {
-                        //                 stack.push(Op::Value(Value::Bool(!negated)));
-                        //             }
-                        //
-                        //             (Value::String(ref expr), Value::String(ref elem))
-                        //                 if expr == elem =>
-                        //             {
-                        //                 stack.push(Op::Value(Value::Bool(!negated)));
-                        //             }
-                        //
-                        //             (Value::Bool(ref expr), Value::Bool(elem)) if *expr == elem => {
-                        //                 stack.push(Op::Value(Value::Bool(!negated)));
-                        //             }
-                        //
-                        //             (expr, elem) => {
-                        //                 return Error::failure(format!("Unreachable code path reached in InSubQuery evaluation: {} {}", expr, elem));
-                        //             }
-                        //         }
-                        //     }
-                        //
-                        //     continue;
-                        // }
+                        if current_line.len() == 1 {
+                            for (_, elem) in current_line {
+                                if !expr.is_same_type(&elem) {
+                                    return Error::failure(format!("Different types used when consuming sub-query {:?} and {:?}", expr, elem));
+                                }
+
+                                match (&expr, elem) {
+                                    (Value::Number(ref expr), Value::Number(elem))
+                                        if expr == elem =>
+                                    {
+                                        stack.push(Op::Value(Value::Bool(!negated)));
+                                    }
+
+                                    (Value::Float(ref expr), Value::Float(elem))
+                                        if expr == elem =>
+                                    {
+                                        stack.push(Op::Value(Value::Bool(!negated)));
+                                    }
+
+                                    (Value::String(ref expr), Value::String(ref elem))
+                                        if expr == elem =>
+                                    {
+                                        stack.push(Op::Value(Value::Bool(!negated)));
+                                    }
+
+                                    (Value::Bool(ref expr), Value::Bool(elem)) if expr == elem => {
+                                        stack.push(Op::Value(Value::Bool(!negated)));
+                                    }
+
+                                    (expr, elem) => {
+                                        return Error::failure(format!("Unreachable code path reached in InSubQuery evaluation: {} {}", expr, elem));
+                                    }
+                                }
+                            }
+
+                            continue;
+                        }
 
                         return Error::failure("in-sub query must only have one column");
                     }
 
-                    // match stream.try_next().await {
-                    //     Err(e) => {
-                    //         return Error::failure(format!("Error when consuming subquery: {}", e));
-                    //     }
-                    //
-                    //     Ok(line) => {
-                    //         if let Some(line) = line {
-                    //             stack.push(Op::InSubQuery(
-                    //                 predicate_expr.clone(),
-                    //                 negated,
-                    //                 line.clone(),
-                    //                 stream,
-                    //             ));
-                    //
-                    //             // We push back onto the stack the left-side expression we already computed.
-                    //             stack.push(Op::Value(expr));
-                    //
-                    //             if let Some(predicate_expr) = predicate_expr {
-                    //                 env.merge_scope(line);
-                    //                 stack.push(Op::Return);
-                    //                 stack.push(Op::Expr(predicate_expr));
-                    //             } else {
-                    //                 stack.push(Op::Value(Value::Bool(true)));
-                    //             }
-                    //
-                    //             continue;
-                    //         }
-                    //
-                    //         stack.push(Op::Value(Value::Bool(negated)));
-                    //     }
-                    // }
+                    if let Some(line) = data.next() {
+                        let selection = main_info.sub_query_selection(subquery);
+                        stack.push(Op::InSubQuery {
+                            subquery,
+                            negated,
+                            data,
+                            current_line: line,
+                        });
+
+                        // We push back onto the stack the left-side expression we already computed.
+                        stack.push(Op::Value(expr));
+
+                        if let Some(selection) = selection {
+                            env.merge_scope(line.clone());
+                            stack.push(Op::Return);
+                            stack.push(Op::Expr(selection));
+                        } else {
+                            stack.push(Op::Value(Value::Bool(true)));
+                        }
+
+                        continue;
+                    }
+
+                    stack.push(Op::Value(Value::Bool(negated)));
                 }
 
                 Op::Expr(expr) => match expr {
@@ -637,22 +623,45 @@ pub fn evaluate<'a>(
                         subquery,
                         negated,
                     } => {
-                        let id = uuid::Uuid::new_v4();
-                        let info = types::collect_query_info(&subquery)?;
+                        let sub_query_info = main_info
+                            .sub_query_info(subquery)
+                            .expect("suq-query info must be defined");
+                        let sub_query_name = &sub_query_info.name;
 
-                        stack.push(Op::InSubQuery(id, *negated, None));
-                        stack.push(Op::Expr(expr));
-
-                        let sub_query_name = info
-                            .source_name
-                            .as_ref()
-                            .expect("sub-query source_name must be defined");
-
-                        let sub_query_data = sub_query_register
+                        let mut data = sub_query_register
                             .get(sub_query_name)
-                            .expect("sub-query data must be defined");
+                            .expect("sub-query data must be defined")
+                            .iter();
 
-                        for data in sub_query_data.iter() {}
+                        if let Some(current_line) = data.next() {
+                            stack.push(Op::InSubQuery {
+                                subquery,
+                                negated: *negated,
+                                data,
+                                current_line,
+                            });
+                            stack.push(Op::Expr(expr));
+
+                            if let Some(selection) = main_info.sub_query_selection(subquery) {
+                                stack.push(Op::Return);
+                                stack.push(Op::Expr(selection));
+                                env.merge_scope(current_line.clone());
+                            } else {
+                                stack.push(Op::Value(Value::Bool(true)));
+                            }
+                        } else {
+                            stack.push(Op::InSubQuery {
+                                subquery,
+                                negated: *negated,
+                                data,
+                                current_line: &empty_line,
+                            });
+
+                            // No need to evaluate the left-side operand because
+                            // the right side is NULL.
+                            stack.push(Op::Value(Value::Null));
+                            stack.push(Op::Value(Value::Null));
+                        }
                     }
 
                     expr => return Error::failure(format!("Unsupported expression: {}", expr)),
@@ -716,6 +725,7 @@ fn parse_like_expr(expr: &str) -> Vec<Like> {
 
     tokens
 }
+
 fn is_string_like(target: &str, expr: &str) -> bool {
     use Like::*;
     let instrs = parse_like_expr(expr);
@@ -775,7 +785,6 @@ fn is_string_like(target: &str, expr: &str) -> bool {
 
 #[cfg(test)]
 mod like_tests {
-
     #[test]
     fn like_expr_parsing() {
         use super::parse_like_expr;

@@ -1,5 +1,5 @@
 use futures::stream::BoxStream;
-use sqlparser::ast::Expr;
+use sqlparser::ast::{Expr, Query};
 use std::collections::HashMap;
 use std::slice::Iter;
 
@@ -108,10 +108,12 @@ pub enum Op<'a> {
     Between(bool),
     Value(Value),
     Expr(&'a sqlparser::ast::Expr),
-    InSubQuery(uuid::Uuid, bool, Iter<'a, Line>),
-    // Select(String),
-    Suspend(uuid::Uuid, QueryInfo),
-    EndOfStream,
+    InSubQuery {
+        subquery: &'a Query,
+        negated: bool,
+        data: Iter<'a, Line>,
+        current_line: &'a Line,
+    },
     Return,
 }
 
@@ -226,11 +228,17 @@ impl SourceName {
 }
 
 #[derive(Debug)]
+pub struct SubQueryInfo {
+    pub name: SourceName,
+    pub selection: Option<Expr>,
+}
+
+#[derive(Debug)]
 pub struct QueryInfo {
     pub fields: Vec<String>,
     pub source_name: Option<SourceName>,
     pub selection: Option<sqlparser::ast::Expr>,
-    pub sub_queries: Vec<SourceName>,
+    pub sub_queries_info: HashMap<Query, SubQueryInfo>,
 }
 
 impl QueryInfo {
@@ -239,7 +247,7 @@ impl QueryInfo {
             fields: Vec::new(),
             source_name: None,
             selection: None,
-            sub_queries: Vec::new(),
+            sub_queries_info: HashMap::new(),
         }
     }
 
@@ -253,6 +261,19 @@ impl QueryInfo {
         }
 
         false
+    }
+
+    pub fn sub_queries(&self) -> impl Iterator<Item = &SourceName> {
+        self.sub_queries_info.values().map(|info| &info.name)
+    }
+
+    pub fn sub_query_selection(&self, query: &Query) -> Option<&Expr> {
+        self.sub_query_info(query)
+            .and_then(|info| info.selection.as_ref())
+    }
+
+    pub fn sub_query_info(&self, query: &Query) -> Option<&SubQueryInfo> {
+        self.sub_queries_info.get(query)
     }
 }
 
@@ -383,11 +404,18 @@ pub fn collect_query_info(source: &sqlparser::ast::Query) -> crate::Result<Query
                                         joins: Vec::new(),
                                     };
 
-                                    info.sub_queries.push(name);
-                                }
+                                    let selection = if let Some(expr) = select.selection.as_ref() {
+                                        stack.push(expr);
 
-                                if let Some(expr) = select.selection.as_ref() {
-                                    stack.push(expr);
+                                        Some(expr.clone())
+                                    } else {
+                                        None
+                                    };
+
+                                    info.sub_queries_info.insert(
+                                        *subquery.clone(),
+                                        SubQueryInfo { name, selection },
+                                    );
                                 }
                             }
                         }
