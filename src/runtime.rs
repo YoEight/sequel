@@ -81,6 +81,7 @@ where
                                 let mut main_source_stream = source.fetch(&main_source).await?;
 
                                 while let Some(mut line) = main_source_stream.try_next().await? {
+                                    println!("{:?} --->> {:?}", main_source.name, line);
                                     let mut skip = false;
                                     line = types::rename_line(&main_source, line);
                                     env.enter_scope(line);
@@ -88,6 +89,31 @@ where
                                     for (join, join_vec) in joins_vecs.iter() {
                                         match join.r#type {
                                             types::JoinType::Inner => {
+                                                let mut matched = false;
+
+                                                for join_line in join_vec.iter() {
+                                                    println!("{:?} <<--- {:?}", join.source_name.name, join_line);
+                                                    println!("Before merge Env: {:?}", env);
+                                                    env.merge_scope(types::rename_line(&join.source_name, join_line.clone()));
+
+                                                    println!("After merge Env: {:?}", env);
+                                                    if let Some(expr) = join.expr.as_ref() {
+                                                        // We can't end up in a suspension use-case because not possible
+                                                        // when joining tables.
+                                                        if let types::Either::Right(value) = evaluate(&mut env, &info, &sub_queries_register, expr)? {
+                                                            println!("Value === {:?}", value);
+                                                            if value.as_bool()? {
+                                                                matched = true;
+                                                                break;
+                                                            }
+                                                        }
+                                                    }
+                                                    env.exit_scope();
+                                                }
+
+                                                skip = !matched;
+                                            }
+                                            types::JoinType::Left => {
                                                 for join_line in join_vec.iter() {
                                                     env.merge_scope(types::rename_line(&join.source_name, join_line.clone()));
 
@@ -97,7 +123,6 @@ where
                                                         if let types::Either::Right(value) = evaluate(&mut env, &info, &sub_queries_register, expr)? {
                                                             if value.is_null() || !value.as_bool()? {
                                                                 env.exit_scope();
-                                                                skip = true;
 
                                                                 break;
                                                             }
@@ -105,7 +130,6 @@ where
                                                     }
                                                 }
                                             }
-                                            types::JoinType::Left => {}
 
                                             // Not possible because we already pre-checked we are not a right or full join,
                                             _ => unreachable!(),
@@ -138,6 +162,12 @@ where
                                     if skip {
                                         continue;
                                     }
+
+                                    let line = env.project_line(&info)?;
+
+                                    yield line;
+
+                                    env.exit_scope();
                                 }
                             }
                         }
@@ -785,6 +815,8 @@ fn is_string_like(target: &str, expr: &str) -> bool {
 
 #[cfg(test)]
 mod like_tests {
+    use crate::types::{self, Line, line_insert};
+
     #[test]
     fn like_expr_parsing() {
         use super::parse_like_expr;
@@ -869,6 +901,83 @@ mod like_tests {
         while let Some(line) = stream.try_next().await? {
             println!(">>> {:?}", line);
         }
+
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn jointure_test1() -> crate::Result<()> {
+        use futures::{StreamExt, TryStreamExt};
+
+        struct Source;
+
+        #[async_trait::async_trait]
+        impl crate::types::DataSource for Source {
+            async fn fetch(
+                &self,
+                name: &crate::types::SourceName,
+            ) -> crate::Result<futures::stream::BoxStream<'_, crate::Result<crate::types::Line>>>
+            {
+                if name.name == "foo" {
+                    let lines = async_stream::try_stream! {
+                        let mut line = crate::types::new_line();
+
+                        line_insert(&mut line, "a", "a_string");
+                        line_insert(&mut line, "c", 3);
+
+                        yield line;
+
+                        let mut line = crate::types::new_line();
+
+                        line_insert(&mut line, "a", "xyz");
+                        line_insert(&mut line, "c", 4);
+
+                        yield line;
+                    };
+
+                    return Ok(lines.boxed());
+                }
+
+                if name.name == "bar" {
+                    let lines = async_stream::try_stream! {
+                        let mut line = crate::types::new_line();
+
+                        line_insert(&mut line, "b", "monad");
+                        line_insert(&mut line, "c", 7);
+
+                        yield line;
+
+                        let mut line = crate::types::new_line();
+
+                        line_insert(&mut line, "b", "applicative");
+                        line_insert(&mut line, "c", 3);
+
+                        yield line;
+                    };
+
+                    return Ok(lines.boxed());
+                }
+
+                todo!()
+            }
+        }
+
+        let query = "select foo.a, bar.b from foo as foo join bar as bar on bar.c = foo.c";
+        let query =
+            sqlparser::parser::Parser::parse_sql(&sqlparser::dialect::AnsiDialect {}, query)
+                .unwrap()
+                .pop()
+                .unwrap();
+
+        let mut result: Vec<Line> = super::run(Source, query).await?.try_collect().await?;
+
+        assert!(!result.is_empty());
+
+        let line = result.pop().unwrap();
+
+        assert_eq!(line.len(), 2);
+        assert_eq!(line.get(&"foo.a".to_string()).unwrap().as_str()?, "a_string");
+        assert_eq!(line.get(&"bar.b".to_string()).unwrap().as_str()?, "applicative");
 
         Ok(())
     }

@@ -13,6 +13,73 @@ pub enum Value {
     Null,
 }
 
+pub trait ToValue {
+    fn to_value(&self) -> Value;
+}
+
+impl ToValue for String {
+    fn to_value(&self) -> Value {
+        Value::String(self.clone())
+    }
+}
+
+impl ToValue for &str {
+    fn to_value(&self) -> Value {
+        Value::String(self.to_string())
+    }
+}
+
+impl ToValue for bool {
+    fn to_value(&self) -> Value {
+        Value::Bool(*self)
+    }
+}
+
+impl ToValue for i8 {
+    fn to_value(&self) -> Value {
+        Value::Number(*self as i64)
+    }
+}
+
+impl ToValue for i16 {
+    fn to_value(&self) -> Value {
+        Value::Number(*self as i64)
+    }
+}
+
+impl ToValue for i32 {
+    fn to_value(&self) -> Value {
+        Value::Number(*self as i64)
+    }
+}
+
+impl ToValue for i64 {
+    fn to_value(&self) -> Value {
+        Value::Number(*self)
+    }
+}
+
+impl ToValue for f32 {
+    fn to_value(&self) -> Value {
+        Value::Float(*self as f64)
+    }
+}
+
+impl ToValue for f64 {
+    fn to_value(&self) -> Value {
+        Value::Float(*self)
+    }
+}
+
+impl<A: ToValue> ToValue for Option<A> {
+    fn to_value(&self) -> Value {
+        match self.as_ref() {
+            None => Value::Null,
+            Some(a) => a.to_value(),
+        }
+    }
+}
+
 impl std::fmt::Display for Value {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
         match self {
@@ -49,6 +116,22 @@ impl Value {
             Ok(*value)
         } else {
             Error::failure(format!("Expected boolean got: {}", self))
+        }
+    }
+
+    pub fn as_str(&self) -> crate::Result<&str> {
+        if let Value::String(value) = self {
+            Ok(value.as_str())
+        } else {
+            Error::failure(format!("Expected String got: {}", self))
+        }
+    }
+
+    pub fn as_num(&self) -> crate::Result<i64> {
+        if let Value::Number(value) = self {
+            Ok(*value)
+        } else {
+            Error::failure(format!("Expected number got: {}", self))
         }
     }
 
@@ -117,12 +200,20 @@ pub enum Op<'a> {
     Return,
 }
 
-#[derive(Copy, Clone, PartialEq, Eq, Hash)]
+#[derive(Copy, Clone, PartialEq, Eq, Hash, Debug)]
 pub struct Scope(usize);
 
 pub type Line = HashMap<String, Value>;
 pub type Cache = HashMap<String, Vec<Line>>;
 pub type Fields = Vec<String>;
+
+pub fn new_line() -> Line {
+    HashMap::new()
+}
+
+pub fn line_insert<A: ToValue>(line: &mut Line, key: impl AsRef<str>, value: A) {
+    line.insert(key.as_ref().to_string(), value.to_value());
+}
 
 pub fn project_line(fields: &Fields, line: &mut Line) {
     if fields.is_empty() {
@@ -433,6 +524,7 @@ pub fn collect_query_info(source: &sqlparser::ast::Query) -> crate::Result<Query
     Ok(info)
 }
 
+#[derive(Debug)]
 pub struct Env {
     scope_gen: usize,
     prev_scopes: Vec<Scope>,
@@ -454,7 +546,7 @@ impl Env {
 
     pub fn enter_scope(&mut self, line: Line) {
         let scope = Scope(self.scope_gen);
-
+        self.prev_scopes.push(self.current_scope);
         self.scope_gen += 1;
         self.current_scope = scope;
         self.variables.insert(scope, line);
@@ -501,6 +593,18 @@ impl Env {
         } else {
             Error::failure(format!("No field registered for query: {}", query))
         }
+    }
+
+    pub fn project_line(&self, info: &QueryInfo) -> crate::Result<Line> {
+
+        if let Some(mut line) = self.variables.get(&self.current_scope).cloned() {
+            project_line(&info.fields, &mut line);
+
+            return Ok(line)
+
+        }
+
+        Error::failure(format!("Internal error: undefined current scope!"))
     }
 }
 
